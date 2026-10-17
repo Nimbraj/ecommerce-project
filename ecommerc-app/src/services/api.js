@@ -2,6 +2,37 @@ const API_BASE_URL = 'http://localhost:8000/api';
 
 const getToken = () => localStorage.getItem('token');
 
+const getErrorMessage = (detail, fallback) => {
+  if (typeof detail === 'string') {
+    return detail;
+  }
+
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => {
+        if (typeof item === 'string') {
+          return item;
+        }
+        if (!item || typeof item !== 'object') {
+          return '';
+        }
+
+        const location = Array.isArray(item.loc)
+          ? item.loc.filter((part) => part !== 'body').join('.')
+          : '';
+        const message = typeof item.msg === 'string' ? item.msg : '';
+        return [location, message].filter(Boolean).join(': ');
+      })
+      .filter(Boolean);
+
+    return messages.length ? messages.join('; ') : fallback;
+  }
+
+  return detail && typeof detail.message === 'string'
+    ? detail.message
+    : fallback;
+};
+
 // ============== GUEST CART HELPERS ==============
 const GUEST_CART_KEY = 'guest_cart';
 
@@ -71,7 +102,7 @@ const apiRequest = async (endpoint, options = {}) => {
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(data.detail || 'Something went wrong');
+    throw new Error(getErrorMessage(data.detail, 'Something went wrong'));
   }
 
   return data;
@@ -94,7 +125,7 @@ export const loginUser = (credentials) => {
     body: formData,
   }).then(async (res) => {
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Login failed');
+    if (!res.ok) throw new Error(getErrorMessage(data.detail, 'Login failed'));
     return data;
   });
 };
@@ -336,4 +367,3 @@ export const deleteTaxRule = (taxId) => apiRequest(`/admin/tax-rules/${taxId}`, 
 
 // ============== AUDIT LOG APIs ==============
 export const getAuditLogs = () => apiRequest('/admin/audit-logs');
-
