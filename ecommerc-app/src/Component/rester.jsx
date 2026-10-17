@@ -73,7 +73,7 @@ const RegisterForm = () => {
       alert("Registration successful! Please login.");
       navigate("/login");
     } catch (err) {
-      setApiError(err.message);
+      setApiError(typeof err?.message === "string" ? err.message : "Registration failed");
     } finally {
       setLoading(false);
     }

@@ -9,28 +9,34 @@ const getErrorMessage = (detail, fallback) => {
 
   if (Array.isArray(detail)) {
     const messages = detail
-      .map((item) => {
-        if (typeof item === 'string') {
-          return item;
-        }
-        if (!item || typeof item !== 'object') {
-          return '';
-        }
-
-        const location = Array.isArray(item.loc)
-          ? item.loc.filter((part) => part !== 'body').join('.')
-          : '';
-        const message = typeof item.msg === 'string' ? item.msg : '';
-        return [location, message].filter(Boolean).join(': ');
-      })
+      .map((item) => getErrorMessage(item, ''))
       .filter(Boolean);
 
     return messages.length ? messages.join('; ') : fallback;
   }
 
-  return detail && typeof detail.message === 'string'
-    ? detail.message
-    : fallback;
+  if (detail && typeof detail === 'object') {
+    const location = Array.isArray(detail.loc)
+      ? detail.loc.filter((part) => part !== 'body').join('.')
+      : '';
+    const message = detail.message ?? detail.msg ?? detail.error ?? detail.detail;
+    if (message !== undefined) {
+      const formattedMessage = getErrorMessage(message, '');
+      if (formattedMessage) {
+        return [location, formattedMessage].filter(Boolean).join(': ');
+      }
+    }
+
+    const fields = Object.entries(detail)
+      .map(([key, value]) => {
+        const formattedValue = getErrorMessage(value, '');
+        return formattedValue ? `${key}: ${formattedValue}` : '';
+      })
+      .filter(Boolean);
+    return fields.length ? fields.join('; ') : fallback;
+  }
+
+  return fallback;
 };
 
 // ============== GUEST CART HELPERS ==============
