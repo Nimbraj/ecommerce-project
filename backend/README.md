@@ -5,7 +5,7 @@
 ### 1. Install Dependencies
 ```bash
 cd backend
-pip install -r requirements.txt
+python -m pip install -r ../requirements.txt
 ```
 
 ### 2. Seed Database (first time only)
@@ -38,4 +38,3 @@ python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ## Interactive API Docs
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
-
