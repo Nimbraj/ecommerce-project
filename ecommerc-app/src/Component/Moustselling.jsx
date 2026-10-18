@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { getProducts, addToCartAPI } from "../services/api";
+import { getProducts, addToCartAPI, assetUrl } from "../services/api";
 
 const categoryColor = {
   "Most Selling": "bg-rose-100 text-rose-700",
@@ -19,7 +19,7 @@ export default function MostSelling() {
       try {
         const data = await getProducts();
         setProducts(data);
-      } catch (err) {
+      } catch {
         setError("Failed to load products");
       } finally {
         setLoading(false);
@@ -54,7 +54,7 @@ export default function MostSelling() {
             className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-md hover:shadow-xl hover:scale-105 transition-transform duration-300"
           >
             <img
-              src={`http://localhost:8000${product.image_url}`}
+              src={assetUrl(product.image_url)}
               alt={`Image of ${product.title}`}
               className="h-56 w-full object-cover"
               onError={(e) => { e.target.src = '/assets/21.jpg'; }}

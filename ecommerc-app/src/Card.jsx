@@ -27,7 +27,7 @@ export default function Cart() {
     try {
       await removeFromCartAPI(cartId);
       fetchCart();
-    } catch (err) {
+    } catch {
       alert("Failed to remove item");
     }
   };
@@ -36,7 +36,7 @@ export default function Cart() {
     try {
       await clearCartAPI();
       fetchCart();
-    } catch (err) {
+    } catch {
       alert("Failed to clear cart");
     }
   };

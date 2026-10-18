@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { FaShoppingCart, FaHeart, FaSearch } from "react-icons/fa";
-import { getCurrentUser, searchProducts, getCartCount } from "../services/api";
+import { getCurrentUser, searchProducts, getCartCount, getCartItems, assetUrl } from "../services/api";
 
 const Header = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -22,7 +22,13 @@ const Header = () => {
       setUser(null);
     }
     const count = getCartCount();
-    setCartCount(count || 0);
+    if (count !== null) {
+      setCartCount(count || 0);
+    } else {
+      getCartItems()
+        .then((items) => setCartCount(items.reduce((sum, item) => sum + item.quantity, 0)))
+        .catch(() => setCartCount(0));
+    }
   };
 
   useEffect(() => {
@@ -77,12 +83,24 @@ const Header = () => {
     <header className="fixed top-0 left-0 w-full bg-[#cdebdd] shadow z-50">
       <div className="mx-auto flex h-16 max-w-screen-xl items-center justify-between px-4 sm:px-6 lg:px-8">
         {/* Logo */}
-        <Link to="/" className="flex items-center text-teal-600 font-bold text-xl" aria-label="Home">
-          ShopSwift
+        <Link to="/" className="flex shrink-0 items-center gap-2" aria-label="JN ECOMMERCE home">
+          <img
+            src="/jn-ecommerce-mark.png"
+            alt=""
+            className="h-8 w-[46px] object-contain sm:h-10 sm:w-[74px]"
+          />
+          <span className="flex flex-col leading-tight">
+            <span className="whitespace-nowrap text-xs font-extrabold tracking-tight text-[#0646a6] sm:text-base lg:text-lg">
+              <span className="text-[#f47700]">JN</span> ECOMMERCE
+            </span>
+            <span className="hidden text-[9px] font-semibold uppercase tracking-[0.22em] text-slate-500 sm:block">
+              Shop · Save · Smile
+            </span>
+          </span>
         </Link>
 
         {/* Search Bar */}
-        <div className="hidden md:flex flex-1 mx-8 max-w-md relative">
+        <div className="hidden lg:flex flex-1 mx-8 max-w-md relative">
           <form onSubmit={handleSearchSubmit} className="w-full relative">
             <input
               type="text"
@@ -101,7 +119,7 @@ const Header = () => {
                     onMouseDown={() => handleSearchSelect(p.id)}
                     className="flex items-center gap-3 px-4 py-2 hover:bg-gray-50 cursor-pointer"
                   >
-                    <img src={`http://localhost:8000${p.image_url}`} alt={p.title} className="w-8 h-8 object-cover rounded" onError={(e) => { e.target.src = '/assets/8.jpg'; }} />
+                    <img src={assetUrl(p.image_url)} alt={p.title} className="w-8 h-8 object-cover rounded" onError={(e) => { e.currentTarget.src = assetUrl('/assets/8.jpg'); }} />
                     <div>
                       <p className="text-sm font-medium text-gray-800">{p.title}</p>
                       <p className="text-xs text-gray-500">₹{p.price}</p>
@@ -123,7 +141,7 @@ const Header = () => {
         </nav>
 
         {/* Right Side Buttons */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-4">
           {/* Wishlist */}
           <Link to="/wishlist" className="relative text-gray-700 hover:text-teal-600 hidden sm:block">
             <FaHeart className="text-xl" />
@@ -161,7 +179,7 @@ const Header = () => {
             <>
               <Link
                 to="/login"
-                className="rounded-md bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 transition"
+                className="rounded-md bg-teal-600 px-3 py-2 text-xs font-medium text-white hover:bg-teal-700 transition sm:px-4 sm:text-sm"
               >
                 Login
               </Link>

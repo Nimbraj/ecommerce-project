@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 import os
+from dotenv import load_dotenv
 import pyotp
 import re
 
@@ -13,7 +14,10 @@ from database import get_db
 from models import User, UserRole
 from schemas import TokenData
 
-SECRET_KEY = os.getenv("SECRET_KEY", "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7")
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("SECRET_KEY must be configured before using authentication")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
 
@@ -89,7 +93,7 @@ def generate_totp_secret() -> str:
     return pyotp.random_base32()
 
 
-def get_totp_uri(secret: str, email: str, issuer: str = "ShopSwift") -> str:
+def get_totp_uri(secret: str, email: str, issuer: str = "JN ECOMMERCE") -> str:
     totp = pyotp.TOTP(secret)
     return totp.provisioning_uri(name=email, issuer_name=issuer)
 

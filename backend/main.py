@@ -1,12 +1,13 @@
 import os
+from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from typing import List, Optional, Union
 from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, EmailStr, validator
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum as SAEnum
+from pydantic import BaseModel, EmailStr, validator, Field
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum as SAEnum, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, relationship, sessionmaker
 from passlib.context import CryptContext
@@ -15,15 +16,19 @@ import pyotp
 import re
 
 # ============== DATABASE SETUP ==============
-SQLALCHEMY_DATABASE_URL = "sqlite:///./shopswift.db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./shopswift.db")
+engine_options = {"connect_args": {"check_same_thread": False}} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(SQLALCHEMY_DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # ============== SECURITY SETUP ==============
-SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("SECRET_KEY must be set in the environment or backend/.env")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
 
@@ -34,6 +39,8 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     name = Column(String, nullable=False)
     hashed_password = Column(String, nullable=False)
+    address = Column(Text, nullable=True)
+    mobile = Column(String, nullable=True)
     is_admin = Column(Boolean, default=False)
     is_banned = Column(Boolean, default=False)
     role = Column(String, default="user")
@@ -170,6 +177,13 @@ class AuditLog(Base):
 
 # Create tables
 Base.metadata.create_all(bind=engine)
+if engine.dialect.name == "sqlite":
+    user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+    with engine.begin() as connection:
+        if "address" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN address TEXT"))
+        if "mobile" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN mobile VARCHAR"))
 
 # ============== SCHEMAS ==============
 class Token(BaseModel):
@@ -180,7 +194,8 @@ class UserCreate(BaseModel):
     email: EmailStr
     name: str
     password: str
-    admin_key: Optional[str] = None
+    address: Optional[str] = None
+    mobile: Optional[str] = None
     
     @validator('password')
     def password_strength(cls, v):
@@ -198,17 +213,27 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
+class TwoFactorVerify(BaseModel):
+    token: str = Field(min_length=6, max_length=8)
+
+class TwoFactorLoginVerify(BaseModel):
+    email: EmailStr
+    password: str
+    token: str = Field(min_length=6, max_length=8)
+
 class UserResponse(BaseModel):
     id: int
     email: str
     name: str
+    address: Optional[str] = None
+    mobile: Optional[str] = None
     is_admin: bool
     role: str
     is_banned: bool
     created_at: datetime
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ProductCreate(BaseModel):
     title: str
@@ -242,14 +267,17 @@ class ProductResponse(BaseModel):
     created_at: datetime
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class CartCreate(BaseModel):
     product_id: int
-    quantity: int = 1
+    quantity: int = Field(default=1, ge=1)
 
 class CartItemUpdate(BaseModel):
-    quantity: int
+    quantity: int = Field(ge=1)
+
+class GuestCartMerge(BaseModel):
+    items: List[CartCreate]
 
 class CartResponse(BaseModel):
     id: int
@@ -259,7 +287,7 @@ class CartResponse(BaseModel):
     product: ProductResponse
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ReviewCreate(BaseModel):
     product_id: int
@@ -276,7 +304,7 @@ class ReviewResponse(BaseModel):
     user_name: Optional[str]
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class WishlistResponse(BaseModel):
     id: int
@@ -286,10 +314,10 @@ class WishlistResponse(BaseModel):
     product: ProductResponse
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class OrderCreate(BaseModel):
-    shipping_address: str
+    shipping_address: str = Field(min_length=1)
     coupon_code: Optional[str] = None
 
 class OrderListResponse(BaseModel):
@@ -301,7 +329,7 @@ class OrderListResponse(BaseModel):
 
 class OrderResponse(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int]
     status: str
     total: float
     shipping_address: str
@@ -311,25 +339,34 @@ class OrderResponse(BaseModel):
     items: list
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class OrderStatusUpdate(BaseModel):
     status: str
 
+class DraftOrderItem(BaseModel):
+    product_id: int = Field(gt=0)
+    quantity: int = Field(gt=0)
+    unit_price: Optional[float] = None
+
 class DraftOrderCreate(BaseModel):
-    user_id: int
-    items: List[dict]
-    shipping_address: str
+    user_id: Optional[int] = None
+    items: List[DraftOrderItem]
+    shipping_address: Optional[str] = None
+    guest_email: Optional[EmailStr] = None
+    guest_name: Optional[str] = None
+    guest_mobile: Optional[str] = None
+    guest_address: Optional[str] = None
     coupon_code: Optional[str] = None
 
 class CouponCreate(BaseModel):
     code: str
-    discount_percent: float
-    min_order_amount: float = 0.0
-    max_discount: Optional[float] = None
+    discount_percent: float = Field(gt=0, le=100)
+    min_order_amount: float = Field(default=0.0, ge=0)
+    max_discount: Optional[float] = Field(default=None, gt=0)
     valid_from: datetime
     valid_until: datetime
-    usage_limit: int = 100
+    usage_limit: int = Field(default=100, ge=1)
 
 class CouponValidate(BaseModel):
     code: str
@@ -354,7 +391,7 @@ class CouponResponse(BaseModel):
     used_count: int
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class InventoryUpdate(BaseModel):
     stock_quantity: int
@@ -398,7 +435,7 @@ class CategoryResponse(BaseModel):
     created_at: datetime
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class TaxRuleCreate(BaseModel):
     name: str
@@ -420,7 +457,7 @@ class TaxRuleResponse(BaseModel):
     created_at: datetime
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class AuditLogResponse(BaseModel):
     id: int
@@ -470,7 +507,7 @@ def generate_totp_secret():
     return pyotp.random_base32()
 
 def get_totp_uri(secret, email):
-    return pyotp.totp.TOTP(secret).provisioning_uri(name=email, issuer_name="ShopSwift")
+    return pyotp.totp.TOTP(secret).provisioning_uri(name=email, issuer_name="JN ECOMMERCE")
 
 def verify_totp(secret, token):
     totp = pyotp.TOTP(secret)
@@ -533,11 +570,15 @@ async def get_current_manager_user(current_user: User = Depends(get_current_acti
 
 # ============== CRUD FUNCTIONS ==============
 def create_user(db: Session, user: UserCreate, is_admin: int = 0):
+    if get_user_by_email(db, user.email):
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
     hashed_password = get_password_hash(user.password)
     db_user = User(
         email=user.email,
         name=user.name,
         hashed_password=hashed_password,
+        address=user.address,
+        mobile=user.mobile,
         is_admin=bool(is_admin),
         role="admin" if is_admin else "user"
     )
@@ -661,13 +702,19 @@ def get_cart_items(db: Session, user_id: int):
     return db.query(Cart).filter(Cart.user_id == user_id).all()
 
 def add_to_cart(db: Session, user_id: int, cart: CartCreate):
+    product = get_product(db, cart.product_id)
+    if not product or product.status != "active":
+        raise HTTPException(status_code=404, detail="Product not found")
     existing = db.query(Cart).filter(
         Cart.user_id == user_id,
         Cart.product_id == cart.product_id
     ).first()
     
+    requested_quantity = cart.quantity + (existing.quantity if existing else 0)
+    if requested_quantity > product.stock_quantity:
+        raise HTTPException(status_code=400, detail="Requested quantity exceeds available stock")
     if existing:
-        existing.quantity += cart.quantity
+        existing.quantity = requested_quantity
         db.commit()
         db.refresh(existing)
         return existing
@@ -678,14 +725,33 @@ def add_to_cart(db: Session, user_id: int, cart: CartCreate):
     db.refresh(db_cart)
     return db_cart
 
+def merge_guest_cart(db: Session, user_id: int, guest_items: List[CartCreate]):
+    quantities = {}
+    for item in guest_items:
+        quantities[item.product_id] = quantities.get(item.product_id, 0) + item.quantity
+    existing_items = {item.product_id: item for item in get_cart_items(db, user_id)}
+    products = {}
+    for product_id, quantity in quantities.items():
+        product = get_product(db, product_id)
+        if not product or product.status != "active":
+            raise HTTPException(status_code=400, detail="A saved cart product is no longer available")
+        total_quantity = quantity + (existing_items[product_id].quantity if product_id in existing_items else 0)
+        if total_quantity > product.stock_quantity:
+            raise HTTPException(status_code=400, detail=f"Insufficient stock for {product.title}")
+        products[product_id] = total_quantity
+    for product_id, quantity in products.items():
+        if product_id in existing_items:
+            existing_items[product_id].quantity = quantity
+        else:
+            db.add(Cart(user_id=user_id, product_id=product_id, quantity=quantity))
+    db.commit()
+
 def update_cart_item(db: Session, cart_id: int, user_id: int, quantity: int):
     cart_item = db.query(Cart).filter(Cart.id == cart_id, Cart.user_id == user_id).first()
     if not cart_item:
         return None
-    if quantity <= 0:
-        db.delete(cart_item)
-        db.commit()
-        return None
+    if quantity > cart_item.product.stock_quantity:
+        raise HTTPException(status_code=400, detail="Requested quantity exceeds available stock")
     cart_item.quantity = quantity
     db.commit()
     db.refresh(cart_item)
@@ -761,6 +827,13 @@ def create_order(db: Session, user_id: int, order: OrderCreate):
     cart_items = get_cart_items(db, user_id)
     if not cart_items:
         raise HTTPException(status_code=400, detail="Cart is empty")
+
+    for cart_item in cart_items:
+        product = cart_item.product
+        if not product or product.status != "active":
+            raise HTTPException(status_code=400, detail="A cart item is no longer available")
+        if cart_item.quantity > product.stock_quantity:
+            raise HTTPException(status_code=400, detail=f"Insufficient stock for {product.title}")
     
     total = sum(item.product.price * item.quantity for item in cart_items)
     discount = 0
@@ -784,21 +857,19 @@ def create_order(db: Session, user_id: int, order: OrderCreate):
         discount=discount
     )
     db.add(db_order)
-    db.commit()
-    db.refresh(db_order)
-    
     for cart_item in cart_items:
-        order_item = OrderItem(
-            order_id=db_order.id,
+        db.add(OrderItem(
+            order=db_order,
             product_id=cart_item.product_id,
             quantity=cart_item.quantity,
             price=cart_item.product.price
-        )
-        product = cart_item.product
-        product.stock_quantity -= cart_item.quantity
-        db.add(order_item)
-    
-    db.commit()
+        ))
+        cart_item.product.stock_quantity -= cart_item.quantity
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(db_order)
     return db_order
 
@@ -815,6 +886,9 @@ def update_order_status(db: Session, order_id: int, status_update: OrderStatusUp
     db_order = get_order(db, order_id)
     if not db_order:
         return None
+    allowed_statuses = {"pending", "confirmed", "processing", "shipped", "delivered"}
+    if status_update.status not in allowed_statuses:
+        raise HTTPException(status_code=400, detail="Use the cancellation or refund action for terminal order states")
     db_order.status = status_update.status
     db_order.updated_at = datetime.utcnow()
     db.commit()
@@ -822,18 +896,37 @@ def update_order_status(db: Session, order_id: int, status_update: OrderStatusUp
     return db_order
 
 def create_draft_order(db: Session, order: DraftOrderCreate):
-    total = sum(item["price"] * item["quantity"] for item in order.items)
+    if not order.items:
+        raise HTTPException(status_code=400, detail="A draft order must contain at least one item")
+    products = {}
+    for item in order.items:
+        product_id = item.product_id
+        quantity = item.quantity
+        product = get_product(db, product_id)
+        if not product:
+            raise HTTPException(status_code=404, detail=f"Product {product_id} not found")
+        products[product_id] = product
+    total = sum(products[item.product_id].price * item.quantity for item in order.items)
     discount = 0
     
     if order.coupon_code:
         coupon_result = validate_coupon(db, order.coupon_code, total)
         if coupon_result["valid"]:
             discount = coupon_result["discount_amount"]
+        else:
+            raise HTTPException(status_code=400, detail=coupon_result["message"])
+
+    shipping_address = order.shipping_address or "\n".join(filter(None, [
+        order.guest_name, str(order.guest_email) if order.guest_email else None,
+        order.guest_mobile, order.guest_address,
+    ]))
+    if not shipping_address:
+        raise HTTPException(status_code=400, detail="Shipping details are required")
     
     db_order = Order(
         user_id=order.user_id,
         total=total - discount,
-        shipping_address=order.shipping_address,
+        shipping_address=shipping_address,
         coupon_code=order.coupon_code,
         discount=discount,
         status="draft"
@@ -845,9 +938,9 @@ def create_draft_order(db: Session, order: DraftOrderCreate):
     for item in order.items:
         order_item = OrderItem(
             order_id=db_order.id,
-            product_id=item["product_id"],
-            quantity=item["quantity"],
-            price=item["price"]
+            product_id=item.product_id,
+            quantity=item.quantity,
+            price=products[item.product_id].price
         )
         db.add(order_item)
     
@@ -859,6 +952,10 @@ def cancel_order(db: Session, order_id: int):
     db_order = get_order(db, order_id)
     if not db_order:
         return None
+    if db_order.status == "cancelled":
+        return db_order
+    if db_order.status not in {"pending", "confirmed", "processing"}:
+        raise HTTPException(status_code=400, detail="Only pending, confirmed, or processing orders can be cancelled")
     db_order.status = "cancelled"
     db_order.updated_at = datetime.utcnow()
     
@@ -886,7 +983,15 @@ def refund_order(db: Session, order_id: int):
     return db_order
 
 def create_coupon(db: Session, coupon: CouponCreate):
-    db_coupon = Coupon(**coupon.dict())
+    payload = coupon.dict()
+    payload["code"] = payload["code"].strip().upper()
+    if not payload["code"]:
+        raise HTTPException(status_code=400, detail="Coupon code is required")
+    if payload["valid_until"] <= payload["valid_from"]:
+        raise HTTPException(status_code=400, detail="Coupon expiry must be after its start date")
+    if db.query(Coupon).filter(Coupon.code == payload["code"]).first():
+        raise HTTPException(status_code=409, detail="A coupon with this code already exists")
+    db_coupon = Coupon(**payload)
     db.add(db_coupon)
     db.commit()
     db.refresh(db_coupon)
@@ -896,7 +1001,7 @@ def get_all_coupons(db: Session):
     return db.query(Coupon).all()
 
 def validate_coupon(db: Session, code: str, order_total: float):
-    coupon = db.query(Coupon).filter(Coupon.code == code).first()
+    coupon = db.query(Coupon).filter(Coupon.code == code.strip().upper()).first()
     
     if not coupon:
         return {"valid": False, "discount_amount": 0, "final_total": order_total, "message": "Invalid coupon code"}
@@ -1074,20 +1179,15 @@ def get_audit_logs(db: Session, skip: int = 0, limit: int = 200):
 
 # ============== FASTAPI APP ==============
 app = FastAPI(
-    title="ShopSwift E-Commerce API",
-    description="FastAPI backend for ShopSwift e-commerce application",
+    title="JN ECOMMERCE API",
+    description="FastAPI backend for the JN ECOMMERCE storefront",
     version="2.1.0"
 )
 
 # ============== CORS MIDDLEWARE ==============
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000").split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1098,13 +1198,11 @@ frontend_assets = os.path.join(os.path.dirname(__file__), "..", "ecommerc-app", 
 if os.path.exists(frontend_assets):
     app.mount("/assets", StaticFiles(directory=frontend_assets), name="assets")
 
-ADMIN_SECRET_KEY = "ADMIN123"
-
 # ============== ROOT ENDPOINT ==============
 @app.get("/", tags=["Root"])
 def read_root():
     return {
-        "message": "Welcome to ShopSwift API",
+        "message": "Welcome to JN ECOMMERCE API",
         "docs": "/docs",
         "version": "2.1.0"
     }
@@ -1112,17 +1210,11 @@ def read_root():
 # ============== USER ENDPOINTS ==============
 @app.post("/api/register", response_model=UserResponse, tags=["Users"])
 def register(user: UserCreate, db: Session = Depends(get_db)):
-    """Register a new user. Provide admin_key to register as admin."""
+    """Register a standard customer account."""
     strength = check_password_strength(user.password)
     if not strength["valid"]:
         raise HTTPException(status_code=400, detail=strength["message"])
-    is_admin = 0
-    if user.admin_key:
-        if user.admin_key == ADMIN_SECRET_KEY:
-            is_admin = 1
-        else:
-            raise HTTPException(status_code=403, detail="Invalid admin key")
-    return create_user(db=db, user=user, is_admin=is_admin)
+    return create_user(db=db, user=user, is_admin=0)
 
 @app.post("/api/login", response_model=Token, tags=["Users"])
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -1160,25 +1252,29 @@ def setup_2fa(current_user: User = Depends(get_current_active_user), db: Session
     return {"secret": secret, "uri": uri}
 
 @app.post("/api/2fa/verify", tags=["2FA"])
-def verify_2fa_setup(token: str, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+def verify_2fa_setup(payload: TwoFactorVerify, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Verify initial TOTP token and enable 2FA"""
     if not current_user.two_factor_secret:
         raise HTTPException(status_code=400, detail="2FA not set up")
-    if verify_totp(current_user.two_factor_secret, token):
+    if verify_totp(current_user.two_factor_secret, payload.token):
         current_user.two_factor_enabled = 1
         db.commit()
         return {"message": "2FA enabled successfully"}
     raise HTTPException(status_code=400, detail="Invalid OTP")
 
 @app.post("/api/2fa/login-verify", response_model=Token, tags=["2FA"])
-def login_2fa_verify(email: str, password: str, token: str, db: Session = Depends(get_db)):
+def login_2fa_verify(payload: TwoFactorLoginVerify, db: Session = Depends(get_db)):
     """Login with 2FA verification step"""
-    user = get_user_by_email(db, email)
-    if not user or not verify_password(password, user.hashed_password):
+    user = get_user_by_email(db, payload.email)
+    if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    if user.is_banned:
+        raise HTTPException(status_code=403, detail="Account has been banned")
+    if user.two_factor_enabled:
+        raise HTTPException(status_code=403, detail="Two-factor authentication required")
     if not user.two_factor_enabled:
         raise HTTPException(status_code=400, detail="2FA not enabled for this user")
-    if not verify_totp(user.two_factor_secret, token):
+    if not verify_totp(user.two_factor_secret, payload.token):
         raise HTTPException(status_code=401, detail="Invalid OTP")
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(data={"sub": user.email}, expires_delta=access_token_expires)
@@ -1265,6 +1361,11 @@ def read_admin_products(
 def read_cart(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get all cart items for current user"""
     return get_cart_items(db, current_user.id)
+
+@app.post("/api/cart/merge", response_model=Message, tags=["Cart"])
+def merge_cart(payload: GuestCartMerge, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    merge_guest_cart(db, current_user.id, payload.items)
+    return {"message": "Guest cart merged successfully"}
 
 @app.post("/api/cart", response_model=CartResponse, tags=["Cart"])
 def add_item_to_cart(

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+﻿import React, { useState } from "react";
 import { motion } from "framer-motion";
 import { Link, useNavigate } from "react-router-dom";
 import { registerUser } from "../services/api";
@@ -11,9 +11,7 @@ const RegisterForm = () => {
     email: "",
     password: "",
     mobile: "",
-    admin_key: "",
   });
-  const [accountType, setAccountType] = useState("user");
 
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
@@ -63,9 +61,6 @@ const RegisterForm = () => {
     if (!validateForm()) return;
 
     const payload = { ...formData };
-    if (accountType === "user") {
-      payload.admin_key = "";
-    }
 
     setLoading(true);
     try {
@@ -96,32 +91,6 @@ const RegisterForm = () => {
             {apiError}
           </div>
         )}
-
-        {/* Account Type Toggle */}
-        <div className="flex rounded-lg bg-gray-100 p-1 mb-6">
-          <button
-            type="button"
-            onClick={() => setAccountType("user")}
-            className={`flex-1 py-2 text-sm font-medium rounded-md transition ${
-              accountType === "user"
-                ? "bg-white text-teal-700 shadow"
-                : "text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            User Account
-          </button>
-          <button
-            type="button"
-            onClick={() => setAccountType("admin")}
-            className={`flex-1 py-2 text-sm font-medium rounded-md transition ${
-              accountType === "admin"
-                ? "bg-white text-teal-700 shadow"
-                : "text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            Admin Account
-          </button>
-        </div>
 
         {/* Name */}
         <div className="mb-4">
@@ -195,40 +164,25 @@ const RegisterForm = () => {
           {errors.mobile && <p className="text-red-500 text-xs mt-1">{errors.mobile}</p>}
         </div>
 
-        {/* Admin Key (only for admin accounts) */}
-        {accountType === "admin" && (
-          <div className="mb-6">
-            <label htmlFor="admin_key" className="block text-sm font-medium mb-1">
-              Admin Secret Key
-            </label>
-            <input
-              id="admin_key"
-              name="admin_key"
-              type="password"
-              value={formData.admin_key}
-              onChange={handleChange}
-              placeholder="Enter admin secret key"
-              className="w-full border border-gray-300 px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-400"
-            />
-            <p className="text-xs text-gray-400 mt-1">
-              Contact your system administrator for the secret key.
-            </p>
-          </div>
-        )}
-
         {/* Submit */}
         <button
           type="submit"
           disabled={loading}
           className="w-full bg-amber-400 py-2 rounded-lg text-white font-semibold hover:bg-amber-500 transition duration-300 disabled:opacity-50"
         >
-          {loading ? "Registering..." : `Register as ${accountType === "admin" ? "Admin" : "User"}`}
+          {loading ? "Registering..." : `Register`}
         </button>
 
         <p className="text-center mt-4 text-sm">
           Already have an account?{" "}
           <Link to="/login" className="text-blue-600 hover:underline">
             Login
+          </Link>
+        </p>
+        <p className="text-center mt-3 text-sm text-gray-600">
+          Admin account?{" "}
+          <Link to="/login?account=admin" className="text-blue-600 hover:underline">
+            Admin login
           </Link>
         </p>
       </motion.form>

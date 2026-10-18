@@ -1,4 +1,8 @@
-from sqlalchemy.orm import Session
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
 from database import SessionLocal, engine, Base
 from models import Product, User
 from crud import create_product
@@ -10,39 +14,27 @@ def seed_users():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        # Seed regular user
-        existing_user = db.query(User).filter(User.email == "user@example.com").first()
-        if not existing_user:
-            user = User(
-                name="Demo User",
-                email="user@example.com",
-                address="123 User Street, City",
-                mobile="9876543210",
-                hashed_password=get_password_hash("User@123"),
-                is_admin=0
-            )
-            db.add(user)
-            db.commit()
-            print("Added demo user: user@example.com / User@123")
-        else:
-            print("Demo user already exists")
+        admin_email = os.getenv("INITIAL_ADMIN_EMAIL")
+        admin_password = os.getenv("INITIAL_ADMIN_PASSWORD")
+        if not admin_email or not admin_password:
+            print("Administrator bootstrap skipped; configure INITIAL_ADMIN_EMAIL and INITIAL_ADMIN_PASSWORD")
+            return
 
-        # Seed admin
-        existing_admin = db.query(User).filter(User.email == "admin@example.com").first()
+        existing_admin = db.query(User).filter(User.email == admin_email).first()
         if not existing_admin:
             admin = User(
-                name="Demo Admin",
-                email="admin@example.com",
+                name=os.getenv("INITIAL_ADMIN_NAME", "Store Administrator"),
+                email=admin_email,
                 address="456 Admin Avenue, City",
                 mobile="9876543211",
-                hashed_password=get_password_hash("Admin@123"),
+                hashed_password=get_password_hash(admin_password),
                 is_admin=1
             )
             db.add(admin)
             db.commit()
-            print("Added demo admin: admin@example.com / Admin@123")
+            print(f"Added configured administrator: {admin_email}")
         else:
-            print("Demo admin already exists")
+            print("Configured administrator already exists")
     except Exception as e:
         print(f"Error seeding users: {e}")
     finally:

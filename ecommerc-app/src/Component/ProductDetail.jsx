@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { getProduct, getReviews, addReview, addToCartAPI, addToWishlist } from "../services/api";
+import { getProduct, getReviews, addReview, addToCartAPI, addToWishlist, assetUrl } from "../services/api";
 
 const StarRating = ({ rating, setRating, interactive = false }) => {
   return (
@@ -22,7 +22,6 @@ const StarRating = ({ rating, setRating, interactive = false }) => {
 
 export default function ProductDetail() {
   const { id } = useParams();
-  const navigate = useNavigate();
   const [product, setProduct] = useState(null);
   const [reviews, setReviews] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -56,17 +55,17 @@ export default function ProductDetail() {
   // Dynamic SEO meta tags
   useEffect(() => {
     if (product) {
-      document.title = product.meta_title || `${product.title} | ShopSwift`;
+      document.title = product.meta_title || `${product.title} | JN ECOMMERCE`;
       let metaDesc = document.querySelector('meta[name="description"]');
       if (!metaDesc) {
         metaDesc = document.createElement('meta');
         metaDesc.setAttribute('name', 'description');
         document.head.appendChild(metaDesc);
       }
-      metaDesc.setAttribute('content', product.meta_description || product.description || `Buy ${product.title} at ShopSwift`);
+      metaDesc.setAttribute('content', product.meta_description || product.description || `Buy ${product.title} at JN ECOMMERCE`);
     }
     return () => {
-      document.title = "ShopSwift";
+      document.title = "JN ECOMMERCE - Online Store";
     };
   }, [product]);
 
@@ -83,7 +82,7 @@ export default function ProductDetail() {
     try {
       await addToWishlist(product.id);
       alert("Added to wishlist!");
-    } catch (err) {
+    } catch {
       alert("Please login to use wishlist");
     }
   };
@@ -98,7 +97,7 @@ export default function ProductDetail() {
       const r = await getReviews(id);
       setReviews(r);
       alert("Review submitted!");
-    } catch (err) {
+    } catch {
       alert("Please login to submit a review");
     } finally {
       setReviewLoading(false);
@@ -137,7 +136,7 @@ export default function ProductDetail() {
             onClick={() => setImgZoom(!imgZoom)}
           >
             <img
-              src={`http://localhost:8000${product.image_url}`}
+              src={assetUrl(product.image_url)}
               alt={product.title}
               className={`w-full object-cover transition-transform duration-500 ${imgZoom ? "scale-150" : "scale-100"}`}
               style={{ height: imgZoom ? "auto" : "400px" }}

@@ -14,7 +14,6 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str = Field(..., min_length=6)
-    admin_key: Optional[str] = None
 
 
 class UserResponse(UserBase):

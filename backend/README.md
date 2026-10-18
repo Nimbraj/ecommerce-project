@@ -1,4 +1,4 @@
-# ShopSwift FastAPI Backend
+# JN ECOMMERCE FastAPI Backend
 
 ## Setup & Run
 

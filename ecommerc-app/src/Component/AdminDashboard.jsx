@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -6,7 +6,7 @@ import {
   PieChart, Pie, Cell
 } from "recharts";
 import {
-  getAdminAnalytics, getAllOrders, updateOrderStatus, getLowStock, updateInventory,
+  getAdminAnalytics, getAllOrders, updateOrderStatus, updateInventory,
   getCoupons, createCoupon, deleteCoupon, getAdminProducts, createProduct, updateProduct, deleteProduct,
   getUsers, createUserAdmin, updateUserAdmin, deleteUserAdmin, banUser, unbanUser,
   getCategories, createCategory, updateCategory, deleteCategory,
@@ -24,7 +24,6 @@ export default function AdminDashboard() {
   const [tab, setTab] = useState("analytics");
   const [analytics, setAnalytics] = useState(null);
   const [orders, setOrders] = useState([]);
-  const [lowStock, setLowStock] = useState([]);
   const [products, setProducts] = useState([]);
   const [coupons, setCoupons] = useState([]);
   const [users, setUsers] = useState([]);
@@ -71,24 +70,18 @@ export default function AdminDashboard() {
   const [inventoryEdits, setInventoryEdits] = useState({});
 
   // Fetch all initial data
-  useEffect(() => { 
-    fetchAll(); 
-  }, []);
-
-  const fetchAll = async () => {
+  const fetchAll = useCallback(async () => {
     setLoading(true); 
     setError("");
     try {
-      const [a, o, l, p, c] = await Promise.all([
+      const [a, o, p, c] = await Promise.all([
         getAdminAnalytics(), 
         getAllOrders(), 
-        getLowStock(), 
         getAdminProducts(), 
         getCoupons()
       ]);
       setAnalytics(a); 
       setOrders(o); 
-      setLowStock(l); 
       setProducts(p); 
       setCoupons(c);
     } catch (err) { 
@@ -97,9 +90,13 @@ export default function AdminDashboard() {
     } finally { 
       setLoading(false); 
     }
-  };
+  }, [navigate]);
 
-  const fetchTabData = async (tabName) => {
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
+
+  const fetchTabData = useCallback(async (tabName) => {
     try {
       if (tabName === "customers") { 
         const u = await getUsers(userSearch); 
@@ -123,13 +120,13 @@ export default function AdminDashboard() {
     } catch (err) { 
       alert(err.message); 
     }
-  };
+  }, [userSearch, productFilter]);
 
   useEffect(() => { 
     if (["customers", "categories", "taxes", "audit", "products"].includes(tab)) {
       fetchTabData(tab); 
     }
-  }, [tab]);
+  }, [tab, fetchTabData]);
 
   // Handler functions
   const handleStatusChange = async (orderId, newStatus) => {
@@ -153,8 +150,6 @@ export default function AdminDashboard() {
           low_stock_threshold: Number(threshold) 
         } : p
       ))); 
-      const l = await getLowStock(); 
-      setLowStock(l); 
       alert("Inventory updated successfully"); 
     } catch (err) { 
       alert(err.message); 
@@ -164,14 +159,16 @@ export default function AdminDashboard() {
   const handleCreateCoupon = async (e) => {
     e.preventDefault(); 
     try { 
-      const payload = { 
-        ...couponForm, 
-        value: Number(couponForm.value), 
-        min_order_value: Number(couponForm.min_order_value || 0), 
-        max_discount: couponForm.max_discount ? Number(couponForm.max_discount) : null, 
-        usage_limit: Number(couponForm.usage_limit || 1), 
-        valid_until: couponForm.valid_until ? new Date(couponForm.valid_until).toISOString() : null 
-      }; 
+      if (!couponForm.valid_until) throw new Error("Choose an expiry date");
+      const payload = {
+        code: couponForm.code.trim().toUpperCase(),
+        discount_percent: Number(couponForm.value),
+        min_order_amount: Number(couponForm.min_order_value || 0),
+        max_discount: couponForm.max_discount ? Number(couponForm.max_discount) : null,
+        usage_limit: Number(couponForm.usage_limit || 1),
+        valid_from: new Date().toISOString(),
+        valid_until: new Date(couponForm.valid_until).toISOString(),
+      };
       await createCoupon(payload); 
       setCouponForm({ 
         code: "", coupon_type: "percentage", value: "", min_order_value: "", 
@@ -1041,7 +1038,6 @@ export default function AdminDashboard() {
                   className="border rounded-lg px-3 py-2 text-sm"
                 >
                   <option value="percentage">Percentage</option>
-                  <option value="fixed">Fixed Amount</option>
                 </select>
                 <input 
                   type="number" 
@@ -1106,9 +1102,9 @@ export default function AdminDashboard() {
                     {coupons.map((c) => (
                       <tr key={c.id} className="border-b hover:bg-gray-50">
                         <td className="px-5 py-3 font-medium">{c.code}</td>
-                        <td className="px-5 py-3 capitalize">{c.coupon_type || "percentage"}</td>
+                        <td className="px-5 py-3 capitalize">Percentage</td>
                         <td className="px-5 py-3">
-                          {c.value || c.discount_percent}{c.coupon_type === "fixed" ? "₹" : "%"}
+                          {c.discount_percent}%
                         </td>
                         <td className="px-5 py-3">{c.used_count || 0}/{c.usage_limit || "∞"}</td>
                         <td className="px-5 py-3">

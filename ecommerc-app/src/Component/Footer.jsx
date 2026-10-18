@@ -26,7 +26,7 @@ const Footer = () => {
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-8">
         {/* Company Info */}
         <div>
-          <h3 className="text-xl font-bold mb-4 text-teal-400">ShopEasy</h3>
+          <h3 className="text-xl font-bold mb-4 text-teal-400">JN ECOMMERCE</h3>
           <p className="text-sm text-gray-300">
             Your one-stop shop for electronics, fashion, home goods and more.
           </p>
@@ -79,7 +79,7 @@ const Footer = () => {
       <hr className="my-6 border-gray-700" />
 
       <p className="text-center text-xs text-gray-400">
-        &copy; {new Date().getFullYear()} ShopEasy. All rights reserved.
+        &copy; {new Date().getFullYear()} JN ECOMMERCE. All rights reserved.
       </p>
     </motion.footer>
   );

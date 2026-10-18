@@ -1,15 +1,9 @@
-import React, { useState, useEffect } from "react";
+﻿import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { getCartItems, clearCartAPI, createOrder, validateCoupon } from "../services/api";
+import { getCartItems, clearCartAPI, createOrder, validateCoupon, assetUrl } from "../services/api";
 
-const paymentMethods = [
-  { id: "card", label: "Credit / Debit Card", icon: "💳" },
-  { id: "upi", label: "UPI / Google Pay / PhonePe", icon: "📱" },
-  { id: "wallet", label: "Digital Wallet (Paytm)", icon: "👛" },
-  { id: "cod", label: "Cash on Delivery", icon: "💵" },
-  { id: "bnpl", label: "Buy Now, Pay Later (Klarna)", icon: "⏳" },
-];
+const paymentMethods = [{ id: "cod", label: "Cash on Delivery", icon: "💵" }];
 
 export default function Checkout() {
   const navigate = useNavigate();
@@ -24,7 +18,7 @@ export default function Checkout() {
     address: "",
     mobile: "",
   });
-  const [paymentMethod, setPaymentMethod] = useState("card");
+  const [paymentMethod, setPaymentMethod] = useState("cod");
   const [processing, setProcessing] = useState(false);
 
   // Coupon
@@ -43,9 +37,9 @@ export default function Checkout() {
   }, []);
 
   const subtotal = items.reduce((sum, item) => sum + (item.product.price * item.quantity), 0);
-  const tax = Math.round(subtotal * 0.18 * 100) / 100;
-  const discount = couponData?.discount || 0;
-  const total = Math.max(0, Math.round((subtotal + tax - discount) * 100) / 100);
+  const tax = 0;
+  const discount = couponData?.discount_amount || 0;
+  const total = Math.max(0, Math.round((subtotal - discount) * 100) / 100);
 
   const handleGuestChange = (e) => {
     setGuestInfo({ ...guestInfo, [e.target.name]: e.target.value });
@@ -90,20 +84,12 @@ export default function Checkout() {
     setProcessing(true);
     try {
       const orderPayload = {
-        items: items.map((item) => ({
-          product_id: item.product_id || item.product.id,
-          quantity: item.quantity,
-          unit_price: item.product.price,
-        })),
-        guest_email: guestInfo.email,
-        guest_name: guestInfo.name,
-        guest_mobile: guestInfo.mobile,
-        guest_address: guestInfo.address,
-        payment_method: paymentMethod,
+        shipping_address: `${guestInfo.name}\n${guestInfo.email}\n${guestInfo.mobile}\n${guestInfo.address}`,
         coupon_code: couponData ? couponCode.trim() : null,
       };
 
       const order = await createOrder(orderPayload);
+      await clearCartAPI();
       setPlacedOrder(order);
       setStep(3);
     } catch (err) {
@@ -148,19 +134,19 @@ export default function Checkout() {
                   {items.map((item) => (
                     <li key={item.id} className="flex justify-between items-center border-b pb-3">
                       <div className="flex items-center gap-4">
-                        <img src={`http://localhost:8000${item.product.image_url}`} alt={item.product.title} className="w-16 h-16 object-cover rounded" onError={(e) => { e.target.src = '/assets/8.jpg'; }} />
+                        <img src={assetUrl(item.product.image_url)} alt={item.product.title} className="w-16 h-16 object-cover rounded" onError={(e) => { e.currentTarget.src = assetUrl('/assets/8.jpg'); }} />
                         <div>
                           <p className="font-medium">{item.product.title}</p>
                           <p className="text-sm text-gray-500">Qty: {item.quantity}</p>
                         </div>
                       </div>
-                      <span className="font-semibold">₹{item.product.price * item.quantity}</span>
+                      <span className="font-semibold">â‚¹{item.product.price * item.quantity}</span>
                     </li>
                   ))}
                 </ul>
                 <div className="flex justify-between text-xl font-bold mb-6">
                   <span>Total</span>
-                  <span>₹{subtotal}</span>
+                  <span>â‚¹{subtotal}</span>
                 </div>
                 <button onClick={() => setStep(2)} className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition">
                   Proceed to Shipping
@@ -205,18 +191,18 @@ export default function Checkout() {
             <div className="bg-white rounded-xl shadow-sm p-6 h-fit space-y-4">
               <h2 className="text-xl font-semibold mb-4">Order Total</h2>
               <div className="space-y-2 text-sm">
-                <div className="flex justify-between"><span>Subtotal</span><span>₹{subtotal.toFixed(2)}</span></div>
+                <div className="flex justify-between"><span>Subtotal</span><span>â‚¹{subtotal.toFixed(2)}</span></div>
                 <div className="flex justify-between"><span>Shipping</span><span className="text-green-600">Free</span></div>
-                <div className="flex justify-between"><span>Tax</span><span>₹{tax.toFixed(2)}</span></div>
+                <div className="flex justify-between"><span>Tax</span><span>â‚¹{tax.toFixed(2)}</span></div>
                 {discount > 0 && (
                   <div className="flex justify-between text-green-600">
                     <span>Discount</span>
-                    <span>-₹{discount.toFixed(2)}</span>
+                    <span>-â‚¹{discount.toFixed(2)}</span>
                   </div>
                 )}
                 <div className="border-t pt-2 flex justify-between font-bold text-lg">
                   <span>Total</span>
-                  <span>₹{total.toFixed(2)}</span>
+                  <span>â‚¹{total.toFixed(2)}</span>
                 </div>
               </div>
 
@@ -253,7 +239,7 @@ export default function Checkout() {
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
           >
-            <div className="text-6xl mb-4">🎉</div>
+            <div className="text-6xl mb-4">ðŸŽ‰</div>
             <h2 className="text-3xl font-bold text-gray-800 mb-2">Order Placed Successfully!</h2>
             <p className="text-gray-500 mb-2">Thank you for your purchase. A confirmation email has been sent.</p>
             <p className="text-lg font-semibold text-teal-700 mb-6">Order ID: #{placedOrder.id}</p>

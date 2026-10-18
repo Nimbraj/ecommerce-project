@@ -1,6 +1,12 @@
 """Seed script compatible with main.py schema (shopswift.db)"""
+import os
 import sys
-sys.path.insert(0, 'c:/Users/Admin/Desktop/Ecommerc/backend')
+from pathlib import Path
+from dotenv import load_dotenv
+
+backend_dir = Path(__file__).resolve().parent
+load_dotenv(backend_dir / ".env")
+sys.path.insert(0, str(backend_dir))
 
 from main import Base, engine, SessionLocal, User, Product, get_password_hash
 from datetime import datetime, timedelta
@@ -9,38 +15,28 @@ def seed():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        # Seed admin
-        admin = db.query(User).filter(User.email == "admin@example.com").first()
-        if not admin:
-            admin = User(
-                name="Demo Admin",
-                email="admin@example.com",
-                hashed_password=get_password_hash("Admin@123"),
-                is_admin=True,
-                role="admin"
-            )
-            db.add(admin)
-            db.commit()
-            print("Added admin: admin@example.com / Admin@123")
+        # Bootstrap an administrator only when explicit credentials are configured.
+        admin_email = os.getenv("INITIAL_ADMIN_EMAIL")
+        admin_password = os.getenv("INITIAL_ADMIN_PASSWORD")
+        if admin_email and admin_password:
+            admin = db.query(User).filter(User.email == admin_email).first()
+            if not admin:
+                admin = User(
+                    name=os.getenv("INITIAL_ADMIN_NAME", "Store Administrator"),
+                    email=admin_email,
+                    hashed_password=get_password_hash(admin_password),
+                    is_admin=True,
+                    role="admin"
+                )
+                db.add(admin)
+                db.commit()
+                print(f"Added configured administrator: {admin_email}")
+            else:
+                print("Configured administrator already exists")
         else:
-            print("Admin already exists")
+            print("Administrator bootstrap skipped; set INITIAL_ADMIN_EMAIL and INITIAL_ADMIN_PASSWORD in backend/.env")
 
-        # Seed regular user
-        user = db.query(User).filter(User.email == "user@example.com").first()
-        if not user:
-            user = User(
-                name="Demo User",
-                email="user@example.com",
-                hashed_password=get_password_hash("User@123"),
-                is_admin=False,
-                role="user"
-            )
-            db.add(user)
-            db.commit()
-            print("Added user: user@example.com / User@123")
-        else:
-            print("User already exists")
-
+        # Seed products without creating public demo accounts.
         # Seed products
         products = [
             {"title": "Wireless Headphones", "description": "Premium wireless headphones with noise cancellation and 20-hour battery life.", "price": 3999.0, "category": "Electronics", "image_url": "/assets/21.jpg", "stock_quantity": 45, "low_stock_threshold": 5},

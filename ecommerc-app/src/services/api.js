@@ -1,4 +1,10 @@
-const API_BASE_URL = 'http://localhost:8000/api';
+const API_ORIGIN = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+const API_BASE_URL = `${API_ORIGIN}/api`;
+
+export const assetUrl = (path) => {
+  if (!path) return `${API_ORIGIN}/assets/8.jpg`;
+  return /^https?:\/\//i.test(path) ? path : `${API_ORIGIN}${path.startsWith('/') ? path : `/${path}`}`;
+};
 
 const getToken = () => localStorage.getItem('token');
 
@@ -137,6 +143,16 @@ export const loginUser = (credentials) => {
 };
 
 export const getCurrentUser = () => apiRequest('/me');
+
+export const mergeGuestCart = async () => {
+  const guestItems = getGuestCart();
+  if (!guestItems.length) return;
+  await apiRequest('/cart/merge', {
+    method: 'POST',
+    body: { items: guestItems.map(({ product_id, quantity }) => ({ product_id, quantity })) },
+  });
+  clearGuestCart();
+};
 
 // ============== 2FA APIs ==============
 export const setup2FA = () => apiRequest('/2fa/setup', { method: 'POST' });

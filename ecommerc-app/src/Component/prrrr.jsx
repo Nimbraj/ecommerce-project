@@ -7,7 +7,7 @@ import img26 from '../assets/26.jpg';
 import img27 from '../assets/27.jpg';
 import img28 from '../assets/28.jpg';
 
-const products = [
+export const products = [
   {
     id: 1,
     title: "Wireless Headphones",
@@ -74,7 +74,7 @@ const products = [
   }
 ];
 
-const categoryColor = {
+export const categoryColor = {
   "Most Selling": "bg-rose-100 text-rose-700",
   "Trending": "bg-yellow-100 text-yellow-700",
   "Regular": "bg-gray-100 text-gray-800",

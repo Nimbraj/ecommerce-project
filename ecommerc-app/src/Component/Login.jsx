@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { motion } from "framer-motion";
-import { Link, useNavigate } from "react-router-dom";
-import { loginUser } from "../services/api";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { loginUser, login2FA, mergeGuestCart } from "../services/api";
 
 const formVariants = {
   hidden: { opacity: 0, y: -50 },
@@ -10,9 +10,13 @@ const formVariants = {
 
 const LoginForm = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const isAdminLogin = searchParams.get("account") === "admin";
   const [formData, setFormData] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [requiresTwoFactor, setRequiresTwoFactor] = useState(false);
+  const [otp, setOtp] = useState("");
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -23,13 +27,26 @@ const LoginForm = () => {
     setError("");
     setLoading(true);
     try {
-      const data = await loginUser(formData);
+      const data = requiresTwoFactor
+        ? await login2FA(formData.email, formData.password, otp)
+        : await loginUser(formData);
       localStorage.setItem("token", data.access_token);
+      try {
+        await mergeGuestCart();
+      } catch (syncError) {
+        localStorage.removeItem("token");
+        throw new Error(`Login could not finish because your saved cart could not be synced: ${syncError.message}`);
+      }
       window.dispatchEvent(new Event("auth-changed"));
       alert("Login successful!");
       navigate("/");
     } catch (err) {
-      setError(err.message);
+      if (err.message === "Two-factor authentication required") {
+        setRequiresTwoFactor(true);
+        setError("Enter the code from your authenticator app.");
+      } else {
+        setError(err.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -44,7 +61,7 @@ const LoginForm = () => {
         animate="visible"
       >
         <h2 className="text-2xl font-bold text-center text-gray-800">
-          Login to Your Account
+          {isAdminLogin ? "Admin Login" : "Login to Your Account"}
         </h2>
 
         {error && (
@@ -72,6 +89,13 @@ const LoginForm = () => {
             />
           </div>
 
+          {requiresTwoFactor && (
+            <div>
+              <label htmlFor="otp" className="block text-sm font-medium text-gray-700">Authenticator code</label>
+              <input id="otp" inputMode="numeric" autoComplete="one-time-code" value={otp} onChange={(event) => setOtp(event.target.value)} required className="w-full px-4 py-2 mt-1 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            </div>
+          )}
+
           <div>
             <label
               htmlFor="password"
@@ -96,7 +120,7 @@ const LoginForm = () => {
             disabled={loading}
             className="w-full py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition duration-300 disabled:opacity-50"
           >
-            {loading ? "Logging in..." : "Login"}
+            {loading ? "Logging in..." : requiresTwoFactor ? "Verify and Login" : "Login"}
           </motion.button>
         </form>
 
@@ -106,6 +130,14 @@ const LoginForm = () => {
             Sign Up
           </Link>
         </p>
+        {!isAdminLogin && (
+          <p className="text-sm text-center text-gray-600">
+            Admin?{" "}
+            <Link to="/login?account=admin" className="text-indigo-600 hover:underline">
+              Admin login
+            </Link>
+          </p>
+        )}
       </motion.div>
     </div>
   );

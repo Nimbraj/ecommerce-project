@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { getProducts, addToCartAPI } from "../services/api";
+import { getProducts, addToCartAPI, assetUrl } from "../services/api";
 
 const containerVariants = {
   hidden: {},
@@ -29,7 +29,7 @@ const CardList = () => {
       try {
         const data = await getProducts();
         setProducts(data);
-      } catch (err) {
+      } catch {
         setError("Failed to load products");
       } finally {
         setLoading(false);
@@ -69,7 +69,7 @@ const CardList = () => {
           className="rounded-2xl bg-white shadow-lg hover:shadow-2xl transition-shadow cursor-pointer overflow-hidden"
         >
           <img
-            src={`http://localhost:8000${product.image_url}`}
+            src={assetUrl(product.image_url)}
             alt={product.title}
             className="w-full h-64 object-cover bg-gray-200"
             onError={(e) => { e.target.src = '/assets/8.jpg'; }}

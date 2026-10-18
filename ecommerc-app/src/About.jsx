@@ -19,7 +19,7 @@ const About = () => {
 
           <p className="text-gray-700 text-lg leading-relaxed mb-4">
             Welcome to{" "}
-            <span className="font-semibold text-teal-600">ShopSwift</span> — your go-to destination for
+            <span className="font-semibold text-teal-600">JN ECOMMERCE</span> — your go-to destination for
             stylish fashion, reliable electronics, trendy home décor, and more. We believe shopping should be
             seamless, affordable, and fun!
           </p>
@@ -32,7 +32,7 @@ const About = () => {
           >
             <h2 className="text-2xl font-semibold text-teal-600 mt-6 mb-2">Our Story</h2>
             <p className="text-gray-700 leading-relaxed mb-4">
-              Founded in 2022, ShopSwift started with a simple idea: to bring quality products to your doorstep with
+              Founded in 2022, JN ECOMMERCE started with a simple idea: to bring quality products to your doorstep with
               a click. From humble beginnings, we’ve grown into a trusted eCommerce platform, serving thousands
               of happy customers across India and beyond.
             </p>

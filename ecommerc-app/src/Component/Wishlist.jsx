@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { getWishlist, removeFromWishlist, addToCartAPI } from "../services/api";
+import { getWishlist, removeFromWishlist, addToCartAPI, assetUrl } from "../services/api";
 
 export default function Wishlist() {
   const [items, setItems] = useState([]);
@@ -13,7 +13,7 @@ export default function Wishlist() {
     try {
       const data = await getWishlist();
       setItems(data);
-    } catch (err) {
+    } catch {
       setError("Please login to view your wishlist");
     } finally {
       setLoading(false);
@@ -28,7 +28,7 @@ export default function Wishlist() {
     try {
       await removeFromWishlist(id);
       fetchWishlist();
-    } catch (err) {
+    } catch {
       alert("Failed to remove");
     }
   };
@@ -64,7 +64,7 @@ export default function Wishlist() {
             {items.map((item) => (
               <div key={item.id} className="bg-white rounded-xl shadow-sm overflow-hidden hover:shadow-md transition">
                 <img
-                  src={`http://localhost:8000${item.product.image_url}`}
+                  src={assetUrl(item.product.image_url)}
                   alt={item.product.title}
                   className="w-full h-48 object-cover cursor-pointer"
                   onClick={() => navigate(`/product/${item.product.id}`)}
