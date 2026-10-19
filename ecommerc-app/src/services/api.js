@@ -268,6 +268,14 @@ export const removeFromWishlist = (wishlistId) => apiRequest(`/wishlist/${wishli
 });
 
 // ============== ORDER APIs ==============
+export const createCashfreeOrder = (orderData) => apiRequest('/payments/cashfree/orders', {
+  method: 'POST',
+  body: orderData,
+});
+
+export const verifyCashfreeOrder = (cashfreeOrderId) =>
+  apiRequest(`/payments/cashfree/orders/${encodeURIComponent(cashfreeOrderId)}/verify`);
+
 export const createOrder = (orderData) => apiRequest('/orders', {
   method: 'POST',
   body: orderData,

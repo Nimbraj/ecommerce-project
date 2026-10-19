@@ -1,12 +1,19 @@
-﻿import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+﻿import React, { useState, useEffect, useRef } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { getCartItems, clearCartAPI, createOrder, validateCoupon, assetUrl } from "../services/api";
+import { load } from "@cashfreepayments/cashfree-js";
+import { getCartItems, clearCartAPI, createOrder, createCashfreeOrder, verifyCashfreeOrder, validateCoupon, assetUrl } from "../services/api";
 
-const paymentMethods = [{ id: "cod", label: "Cash on Delivery", icon: "💵" }];
+const paymentMethods = [
+  { id: "cashfree", label: "Pay online with Cashfree (UPI, cards & more)", icon: "CF" },
+  { id: "cod", label: "Cash on Delivery", icon: "COD" },
+];
 
 export default function Checkout() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const cashfreeOrderId = searchParams.get("cashfree_order_id");
+  const verifiedReturn = useRef(null);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState(1);
@@ -18,8 +25,10 @@ export default function Checkout() {
     address: "",
     mobile: "",
   });
-  const [paymentMethod, setPaymentMethod] = useState("cod");
+  const [paymentMethod, setPaymentMethod] = useState("cashfree");
   const [processing, setProcessing] = useState(false);
+  const [paymentNotice, setPaymentNotice] = useState("");
+  const [pendingPaymentSession, setPendingPaymentSession] = useState(null);
 
   // Coupon
   const [couponCode, setCouponCode] = useState("");
@@ -35,6 +44,59 @@ export default function Checkout() {
       .catch(() => setItems([]))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!cashfreeOrderId || verifiedReturn.current === cashfreeOrderId) return undefined;
+    verifiedReturn.current = cashfreeOrderId;
+    let cancelled = false;
+    setProcessing(true);
+    setPaymentNotice("Checking your Cashfree payment...");
+
+    verifyCashfreeOrder(cashfreeOrderId)
+      .then((result) => {
+        if (cancelled) return;
+        if (result.payment_status === "paid" && result.order) {
+          setPlacedOrder(result.order);
+          setItems([]);
+          setPendingPaymentSession(null);
+          setPaymentNotice("");
+          setStep(3);
+        } else if (result.payment_status === "pending") {
+          setPendingPaymentSession(result.payment_session_id ? {
+            order_id: cashfreeOrderId,
+            payment_session_id: result.payment_session_id,
+            mode: result.mode || "sandbox",
+          } : null);
+          setPaymentNotice("Payment is still pending. You can retry checkout below or check the order status later.");
+          setStep(2);
+        } else {
+          setPaymentNotice("Payment was not completed. You can choose a payment method and try again.");
+          setPendingPaymentSession(null);
+          setStep(2);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setPaymentNotice(err.message || "We could not verify your payment. Please try again.");
+          setStep(2);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setProcessing(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [cashfreeOrderId]);
+
+  const openCashfreeCheckout = async (session) => {
+    const cashfree = await load({ mode: session.mode || "sandbox" });
+    if (!cashfree) throw new Error("Cashfree checkout could not be loaded. Please check your connection and retry.");
+    setPendingPaymentSession(session);
+    await cashfree.checkout({
+      paymentSessionId: session.payment_session_id,
+      redirectTarget: "_self",
+    });
+  };
 
   const subtotal = items.reduce((sum, item) => sum + (item.product.price * item.quantity), 0);
   const tax = 0;
@@ -82,18 +144,48 @@ export default function Checkout() {
     }
 
     setProcessing(true);
+    setPaymentNotice("");
     try {
       const orderPayload = {
         shipping_address: `${guestInfo.name}\n${guestInfo.email}\n${guestInfo.mobile}\n${guestInfo.address}`,
         coupon_code: couponData ? couponCode.trim() : null,
       };
 
-      const order = await createOrder(orderPayload);
-      await clearCartAPI();
-      setPlacedOrder(order);
-      setStep(3);
+      if (paymentMethod === "cashfree") {
+        const session = await createCashfreeOrder({
+          ...orderPayload,
+          customer_name: guestInfo.name,
+          customer_email: guestInfo.email,
+          customer_phone: guestInfo.mobile,
+        });
+        if (session.payment_status === "paid" && session.order) {
+          setPlacedOrder(session.order);
+          setStep(3);
+        } else {
+          setPendingPaymentSession(session);
+          await openCashfreeCheckout(session);
+        }
+      } else {
+        const order = await createOrder(orderPayload);
+        await clearCartAPI();
+        setPlacedOrder(order);
+        setStep(3);
+      }
     } catch (err) {
-      alert(err.message || "Failed to place order");
+      setPaymentNotice(err.message || "Failed to place order");
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleRetryPayment = async () => {
+    if (!pendingPaymentSession) return;
+    setProcessing(true);
+    setPaymentNotice("");
+    try {
+      await openCashfreeCheckout(pendingPaymentSession);
+    } catch (err) {
+      setPaymentNotice(err.message || "Could not open Cashfree checkout. Please retry.");
     } finally {
       setProcessing(false);
     }
@@ -161,6 +253,16 @@ export default function Checkout() {
             {/* Shipping */}
             <div className="bg-white rounded-xl shadow-sm p-6">
               <h2 className="text-xl font-semibold mb-4">Shipping Details</h2>
+              {paymentNotice && (
+                <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <p>{paymentNotice}</p>
+                  {pendingPaymentSession && (
+                    <button onClick={handleRetryPayment} disabled={processing} className="mt-2 font-semibold underline disabled:opacity-50">
+                      {processing ? "Opening checkout..." : "Retry Cashfree payment"}
+                    </button>
+                  )}
+                </div>
+              )}
               <div className="space-y-3">
                 <input name="name" value={guestInfo.name} onChange={handleGuestChange} placeholder="Full Name" className="w-full border rounded-lg px-4 py-2 focus:ring-2 focus:ring-teal-400 outline-none" />
                 <input name="email" type="email" value={guestInfo.email} onChange={handleGuestChange} placeholder="Email" className="w-full border rounded-lg px-4 py-2 focus:ring-2 focus:ring-teal-400 outline-none" />
@@ -182,7 +284,7 @@ export default function Checkout() {
               <div className="flex gap-3 mt-6">
                 <button onClick={() => setStep(1)} className="flex-1 border border-gray-300 py-2 rounded-lg hover:bg-gray-50">Back</button>
                 <button onClick={handlePlaceOrder} disabled={processing} className="flex-1 bg-teal-600 text-white py-2 rounded-lg hover:bg-teal-700 transition disabled:opacity-50">
-                  {processing ? "Processing..." : "Place Order"}
+                  {processing ? "Processing..." : paymentMethod === "cashfree" ? "Pay with Cashfree" : "Place Order"}
                 </button>
               </div>
             </div>
