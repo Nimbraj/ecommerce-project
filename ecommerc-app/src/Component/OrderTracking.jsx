@@ -34,6 +34,11 @@ export default function OrderTracking() {
     }
   };
 
+  const subtotal = selectedOrder?.items?.reduce(
+    (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
+    0,
+  ) || 0;
+
   if (loading) return <div className="pt-24 text-center">Loading your orders...</div>;
   if (error) return <div className="pt-24 text-center text-red-500">{error}</div>;
 
@@ -98,6 +103,9 @@ export default function OrderTracking() {
                 {/* Status Timeline */}
                 <div>
                   <h3 className="font-semibold text-gray-700 mb-3">Order Status</h3>
+                  {["cancelled", "refunded"].includes(selectedOrder.status) ? (
+                    <p className="capitalize text-gray-600">This order has been {selectedOrder.status}.</p>
+                  ) : (
                   <div className="flex items-center">
                     {STATUS_STEPS.map((step, idx) => {
                       const currentIdx = STATUS_STEPS.indexOf(selectedOrder.status);
@@ -124,6 +132,7 @@ export default function OrderTracking() {
                       );
                     })}
                   </div>
+                  )}
                 </div>
 
                 {/* Items */}
@@ -136,7 +145,7 @@ export default function OrderTracking() {
                           <p className="font-medium text-gray-800">{item.product?.title || `Product #${item.product_id}`}</p>
                           <p className="text-sm text-gray-500">Qty: {item.quantity}</p>
                         </div>
-                        <span className="font-medium">₹{(item.unit_price * item.quantity).toFixed(2)}</span>
+                        <span className="font-medium">₹{(Number(item.price) * item.quantity).toFixed(2)}</span>
                       </li>
                     ))}
                   </ul>
@@ -146,11 +155,11 @@ export default function OrderTracking() {
                 <div className="bg-gray-50 rounded-lg p-4 space-y-2 text-sm">
                   <div className="flex justify-between">
                     <span className="text-gray-600">Subtotal</span>
-                    <span>₹{Number(selectedOrder.subtotal).toFixed(2)}</span>
+                    <span>₹{Number(selectedOrder.subtotal ?? subtotal).toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-600">Tax</span>
-                    <span>₹{Number(selectedOrder.tax).toFixed(2)}</span>
+                    <span>₹{Number(selectedOrder.tax || 0).toFixed(2)}</span>
                   </div>
                   {selectedOrder.discount > 0 && (
                     <div className="flex justify-between text-green-600">

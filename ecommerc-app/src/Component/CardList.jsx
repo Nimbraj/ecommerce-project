@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { getProducts, addToCartAPI, assetUrl } from "../services/api";
+import { getProducts, searchProducts, addToCartAPI, assetUrl } from "../services/api";
 
 const containerVariants = {
   hidden: {},
@@ -23,20 +23,28 @@ const CardList = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const searchQuery = searchParams.get("q")?.trim() || "";
 
   useEffect(() => {
+    let isCurrentRequest = true;
+    setLoading(true);
+    setError("");
     const fetchProducts = async () => {
       try {
-        const data = await getProducts();
-        setProducts(data);
+        const data = searchQuery ? await searchProducts(searchQuery) : await getProducts();
+        if (isCurrentRequest) setProducts(data);
       } catch {
-        setError("Failed to load products");
+        if (isCurrentRequest) setError("Failed to load products");
       } finally {
-        setLoading(false);
+        if (isCurrentRequest) setLoading(false);
       }
     };
     fetchProducts();
-  }, []);
+    return () => {
+      isCurrentRequest = false;
+    };
+  }, [searchQuery]);
 
   const handleCardClick = (index) => {
     setSelectedIndex(index === selectedIndex ? null : index);
@@ -55,13 +63,20 @@ const CardList = () => {
   if (error) return <div className="p-20 text-center text-red-500">{error}</div>;
 
   return (
-    <motion.div
-      className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 p-6 bg-gray-100 min-h-screen pt-20"
-      variants={containerVariants}
-      initial="hidden"
-      animate="visible"
-    >
-      {products.map((product, index) => (
+    <>
+      {searchQuery && (
+        <div className="px-6 pt-6 text-gray-700">
+          <h2 className="text-xl font-semibold">Search results for “{searchQuery}”</h2>
+          <p className="text-sm text-gray-500">{products.length} product{products.length === 1 ? "" : "s"} found</p>
+        </div>
+      )}
+      <motion.div
+        className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 p-6 bg-gray-100 min-h-screen pt-20"
+        variants={containerVariants}
+        initial="hidden"
+        animate="visible"
+      >
+        {products.map((product, index) => (
         <motion.div
           key={product.id}
           variants={cardVariants}
@@ -72,7 +87,7 @@ const CardList = () => {
             src={assetUrl(product.image_url)}
             alt={product.title}
             className="w-full h-64 object-cover bg-gray-200"
-            onError={(e) => { e.target.src = '/assets/8.jpg'; }}
+            onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = assetUrl('/assets/8.jpg'); }}
           />
           <div className="p-4 space-y-2">
             <h2 className="text-lg font-semibold text-gray-800">{product.title}</h2>
@@ -106,8 +121,9 @@ const CardList = () => {
             )}
           </div>
         </motion.div>
-      ))}
-    </motion.div>
+        ))}
+      </motion.div>
+    </>
   );
 };
 

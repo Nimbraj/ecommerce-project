@@ -10,7 +10,7 @@ python -m pip install -r ../requirements.txt
 
 ### 2. Seed Database (first time only)
 ```bash
-python seed.py
+python seed_main.py
 ```
 
 ### 3. Start Server

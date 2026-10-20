@@ -1,7 +1,7 @@
 ﻿import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { getCartItems, clearCartAPI, createOrder, validateCoupon, assetUrl } from "../services/api";
+import { getCartItems, createOrder, validateCoupon, estimateTax, assetUrl } from "../services/api";
 
 export default function Checkout() {
   const navigate = useNavigate();
@@ -15,6 +15,8 @@ export default function Checkout() {
     email: "",
     address: "",
     mobile: "",
+    country: "",
+    region: "",
   });
   const [processing, setProcessing] = useState(false);
   const [paymentNotice, setPaymentNotice] = useState("");
@@ -23,6 +25,9 @@ export default function Checkout() {
   const [couponCode, setCouponCode] = useState("");
   const [couponData, setCouponData] = useState(null);
   const [couponLoading, setCouponLoading] = useState(false);
+  const [tax, setTax] = useState(0);
+  const [taxLoading, setTaxLoading] = useState(false);
+  const [taxError, setTaxError] = useState("");
 
   // Order result
   const [placedOrder, setPlacedOrder] = useState(null);
@@ -35,9 +40,40 @@ export default function Checkout() {
   }, []);
 
   const subtotal = items.reduce((sum, item) => sum + (item.product.price * item.quantity), 0);
-  const tax = 0;
   const discount = couponData?.discount_amount || 0;
-  const total = Math.max(0, Math.round((subtotal - discount) * 100) / 100);
+  const total = Math.max(0, Math.round((subtotal - discount + tax) * 100) / 100);
+
+  useEffect(() => {
+    let isCurrentRequest = true;
+    if (!guestInfo.country.trim()) {
+      setTax(0);
+      setTaxLoading(false);
+      setTaxError("");
+      return () => { isCurrentRequest = false; };
+    }
+
+    setTax(0);
+    setTaxLoading(true);
+    setTaxError("");
+    const timer = setTimeout(async () => {
+      try {
+        const estimate = await estimateTax(guestInfo.country, guestInfo.region, subtotal, discount);
+        if (isCurrentRequest) setTax(Number(estimate.tax) || 0);
+      } catch {
+        if (isCurrentRequest) {
+          setTax(0);
+          setTaxError("Could not estimate tax. Check your connection and try again.");
+        }
+      } finally {
+        if (isCurrentRequest) setTaxLoading(false);
+      }
+    }, 250);
+
+    return () => {
+      isCurrentRequest = false;
+      clearTimeout(timer);
+    };
+  }, [guestInfo.country, guestInfo.region, subtotal, discount]);
 
   const handleGuestChange = (e) => {
     setGuestInfo({ ...guestInfo, [e.target.name]: e.target.value });
@@ -84,11 +120,16 @@ export default function Checkout() {
     try {
       const orderPayload = {
         shipping_address: `${guestInfo.name}\n${guestInfo.email}\n${guestInfo.mobile}\n${guestInfo.address}`,
+        guest_name: guestInfo.name,
+        guest_email: guestInfo.email,
+        guest_mobile: guestInfo.mobile,
+        guest_address: guestInfo.address,
+        guest_country: guestInfo.country,
+        guest_region: guestInfo.region,
         coupon_code: couponData ? couponCode.trim() : null,
       };
 
       const order = await createOrder(orderPayload);
-      await clearCartAPI();
       setPlacedOrder(order);
       setStep(3);
     } catch (err) {
@@ -139,13 +180,13 @@ export default function Checkout() {
                           <p className="text-sm text-gray-500">Qty: {item.quantity}</p>
                         </div>
                       </div>
-                      <span className="font-semibold">â‚¹{item.product.price * item.quantity}</span>
+                      <span className="font-semibold">₹{item.product.price * item.quantity}</span>
                     </li>
                   ))}
                 </ul>
                 <div className="flex justify-between text-xl font-bold mb-6">
                   <span>Total</span>
-                  <span>â‚¹{subtotal}</span>
+                  <span>₹{subtotal}</span>
                 </div>
                 <button onClick={() => setStep(2)} className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition">
                   Proceed to Shipping
@@ -170,6 +211,8 @@ export default function Checkout() {
                 <input name="email" type="email" value={guestInfo.email} onChange={handleGuestChange} placeholder="Email" className="w-full border rounded-lg px-4 py-2 focus:ring-2 focus:ring-teal-400 outline-none" />
                 <input name="mobile" value={guestInfo.mobile} onChange={handleGuestChange} placeholder="Mobile (10 digits)" className="w-full border rounded-lg px-4 py-2 focus:ring-2 focus:ring-teal-400 outline-none" />
                 <textarea name="address" value={guestInfo.address} onChange={handleGuestChange} placeholder="Full Address" rows={3} className="w-full border rounded-lg px-4 py-2 focus:ring-2 focus:ring-teal-400 outline-none" />
+                <input name="country" value={guestInfo.country} onChange={handleGuestChange} placeholder="Country (for tax)" className="w-full border rounded-lg px-4 py-2 focus:ring-2 focus:ring-teal-400 outline-none" />
+                <input name="region" value={guestInfo.region} onChange={handleGuestChange} placeholder="State / Region (for tax)" className="w-full border rounded-lg px-4 py-2 focus:ring-2 focus:ring-teal-400 outline-none" />
               </div>
 
               <h3 className="text-lg font-semibold mt-6 mb-3">Payment Method</h3>
@@ -179,7 +222,7 @@ export default function Checkout() {
 
               <div className="flex gap-3 mt-6">
                 <button onClick={() => setStep(1)} className="flex-1 border border-gray-300 py-2 rounded-lg hover:bg-gray-50">Back</button>
-                <button onClick={handlePlaceOrder} disabled={processing} className="flex-1 bg-teal-600 text-white py-2 rounded-lg hover:bg-teal-700 transition disabled:opacity-50">
+                <button onClick={handlePlaceOrder} disabled={processing || taxLoading || Boolean(taxError)} className="flex-1 bg-teal-600 text-white py-2 rounded-lg hover:bg-teal-700 transition disabled:opacity-50">
                   {processing ? "Processing..." : "Place Order"}
                 </button>
               </div>
@@ -189,18 +232,19 @@ export default function Checkout() {
             <div className="bg-white rounded-xl shadow-sm p-6 h-fit space-y-4">
               <h2 className="text-xl font-semibold mb-4">Order Total</h2>
               <div className="space-y-2 text-sm">
-                <div className="flex justify-between"><span>Subtotal</span><span>â‚¹{subtotal.toFixed(2)}</span></div>
+                <div className="flex justify-between"><span>Subtotal</span><span>₹{subtotal.toFixed(2)}</span></div>
                 <div className="flex justify-between"><span>Shipping</span><span className="text-green-600">Free</span></div>
-                <div className="flex justify-between"><span>Tax</span><span>â‚¹{tax.toFixed(2)}</span></div>
+                <div className="flex justify-between"><span>Tax</span><span>₹{tax.toFixed(2)}</span></div>
+                {taxError && <p role="status" className="text-xs text-red-600">{taxError}</p>}
                 {discount > 0 && (
                   <div className="flex justify-between text-green-600">
                     <span>Discount</span>
-                    <span>-â‚¹{discount.toFixed(2)}</span>
+                    <span>-₹{discount.toFixed(2)}</span>
                   </div>
                 )}
                 <div className="border-t pt-2 flex justify-between font-bold text-lg">
                   <span>Total</span>
-                  <span>â‚¹{total.toFixed(2)}</span>
+                  <span>₹{total.toFixed(2)}</span>
                 </div>
               </div>
 
@@ -237,9 +281,9 @@ export default function Checkout() {
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
           >
-            <div className="text-6xl mb-4">ðŸŽ‰</div>
+            <div className="text-6xl mb-4">🎉</div>
             <h2 className="text-3xl font-bold text-gray-800 mb-2">Order Placed Successfully!</h2>
-            <p className="text-gray-500 mb-2">Thank you for your purchase. A confirmation email has been sent.</p>
+            <p className="text-gray-500 mb-2">Thank you for your purchase. You can track your order status here.</p>
             <p className="text-lg font-semibold text-teal-700 mb-6">Order ID: #{placedOrder.id}</p>
             <div className="flex justify-center gap-4">
               <button onClick={() => navigate("/orders")} className="bg-gray-800 text-white px-6 py-3 rounded-lg hover:bg-gray-900 transition">

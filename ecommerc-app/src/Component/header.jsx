@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { FaShoppingCart, FaHeart, FaSearch } from "react-icons/fa";
 import { getCurrentUser, searchProducts, getCartCount, getCartItems, assetUrl } from "../services/api";
@@ -12,15 +12,7 @@ const Header = () => {
   const [cartCount, setCartCount] = useState(0);
   const navigate = useNavigate();
 
-  const checkAuth = () => {
-    const token = localStorage.getItem("token");
-    if (token) {
-      getCurrentUser()
-        .then((data) => setUser(data))
-        .catch(() => { localStorage.removeItem("token"); setUser(null); });
-    } else {
-      setUser(null);
-    }
+  const refreshCartCount = useCallback(() => {
     const count = getCartCount();
     if (count !== null) {
       setCartCount(count || 0);
@@ -29,17 +21,31 @@ const Header = () => {
         .then((items) => setCartCount(items.reduce((sum, item) => sum + item.quantity, 0)))
         .catch(() => setCartCount(0));
     }
-  };
+  }, []);
+
+  const checkAuth = useCallback(() => {
+    const token = localStorage.getItem("token");
+    if (token) {
+      getCurrentUser()
+        .then((data) => setUser(data))
+        .catch(() => { localStorage.removeItem("token"); setUser(null); });
+    } else {
+      setUser(null);
+    }
+    refreshCartCount();
+  }, [refreshCartCount]);
 
   useEffect(() => {
     checkAuth();
     window.addEventListener("auth-changed", checkAuth);
+    window.addEventListener("cart-changed", refreshCartCount);
     window.addEventListener("focus", checkAuth);
     return () => {
       window.removeEventListener("auth-changed", checkAuth);
+      window.removeEventListener("cart-changed", refreshCartCount);
       window.removeEventListener("focus", checkAuth);
     };
-  }, []);
+  }, [checkAuth, refreshCartCount]);
 
   const handleLogout = () => {
     localStorage.removeItem("token");

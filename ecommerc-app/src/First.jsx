@@ -5,7 +5,7 @@ import CardList from './Component/CardList'
 import Section from './Component/Section'
 import { motion } from 'framer-motion'
 import Section2 from './Component/Section2'
-import Footer from './Component/footer'
+import Footer from './Component/Footer'
 
 
 export default function First() {

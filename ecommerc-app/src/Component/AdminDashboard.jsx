@@ -15,7 +15,7 @@ import {
 } from "../services/api";
 
 const COLORS = ["#0d9488", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6"];
-const STATUS_OPTIONS = ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled"];
+const STATUS_OPTIONS = ["pending", "confirmed", "processing", "shipped", "delivered"];
 const PRODUCT_STATUS_OPTIONS = ["active", "draft", "archived", "out_of_stock"];
 const ROLE_OPTIONS = ["customer", "manager", "admin"];
 
@@ -65,7 +65,8 @@ export default function AdminDashboard() {
   });
   const [draftOrderForm, setDraftOrderForm] = useState({ 
     items: [{ product_id: "", quantity: "", unit_price: "" }], 
-    guest_email: "", guest_name: "", guest_mobile: "", guest_address: ""
+    guest_email: "", guest_name: "", guest_mobile: "", guest_address: "",
+    guest_country: "", guest_region: ""
   });
   const [inventoryEdits, setInventoryEdits] = useState({});
 
@@ -205,8 +206,8 @@ export default function AdminDashboard() {
         category: product.category || "", 
         image_url: product.image_url || "", 
         status: product.status || "active", 
-        stock_quantity: product.stock_quantity || "100", 
-        low_stock_threshold: product.low_stock_threshold || "10", 
+        stock_quantity: product.stock_quantity ?? "100",
+        low_stock_threshold: product.low_stock_threshold ?? "10",
         is_featured: product.is_featured || 0 
       }); 
     } else { 
@@ -337,7 +338,7 @@ export default function AdminDashboard() {
     e.preventDefault(); 
     try { 
       const payload = { ...categoryForm }; 
-      if (!payload.parent_id) delete payload.parent_id; 
+      payload.parent_id = payload.parent_id ? Number(payload.parent_id) : null;
       if (editingCategory) { 
         await updateCategory(editingCategory.id, payload); 
       } else { 
@@ -367,7 +368,7 @@ export default function AdminDashboard() {
       setEditingTax(tax); 
       setTaxForm({ 
         name: tax.name || "", 
-        rate: tax.rate || "", 
+        rate: tax.rate ?? "",
         country: tax.country || "", 
         region: tax.region || "", 
         is_active: tax.is_active ?? 1 
@@ -419,7 +420,7 @@ export default function AdminDashboard() {
         items: draftOrderForm.items.map((item) => ({ 
           product_id: Number(item.product_id), 
           quantity: Number(item.quantity), 
-          unit_price: Number(item.unit_price) 
+          unit_price: item.unit_price === "" ? null : Number(item.unit_price)
         })) 
       }; 
       await createDraftOrder(payload); 
@@ -427,7 +428,7 @@ export default function AdminDashboard() {
       setDraftOrderForm({ 
         items: [{ product_id: "", quantity: "", unit_price: "" }], 
         guest_email: "", guest_name: "", guest_mobile: "", 
-        guest_address: ""
+        guest_address: "", guest_country: "", guest_region: ""
       }); 
       const o = await getAllOrders(); 
       setOrders(o); 
@@ -784,7 +785,7 @@ export default function AdminDashboard() {
                     {orders.map((o) => (
                       <tr key={o.id} className="border-b hover:bg-gray-50">
                         <td className="px-5 py-3 font-medium">#{o.id}</td>
-                        <td className="px-5 py-3">{o.user?.name || "N/A"}</td>
+                        <td className="px-5 py-3">{o.user_name || o.guest_name || o.guest_email || "N/A"}</td>
                         <td className="px-5 py-3">
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusBadge(o.status)}`}>
                             {o.status}
@@ -793,16 +794,18 @@ export default function AdminDashboard() {
                         <td className="px-5 py-3">₹{Number(o.total).toFixed(2)}</td>
                         <td className="px-5 py-3">{new Date(o.created_at).toLocaleDateString()}</td>
                         <td className="px-5 py-3 space-x-2">
-                          <select
-                            value={o.status}
-                            onChange={(e) => handleStatusChange(o.id, e.target.value)}
-                            className="border rounded px-2 py-1 text-xs"
-                          >
-                            {STATUS_OPTIONS.map((s) => (
-                              <option key={s} value={s}>{s}</option>
-                            ))}
-                          </select>
-                          {o.status !== "cancelled" && o.status !== "delivered" && (
+                          {!['cancelled', 'refunded', 'delivered'].includes(o.status) && (
+                            <select
+                              value={o.status}
+                              onChange={(e) => handleStatusChange(o.id, e.target.value)}
+                              className="border rounded px-2 py-1 text-xs"
+                            >
+                              {(o.status === "draft" ? ["draft", ...STATUS_OPTIONS] : STATUS_OPTIONS).map((s) => (
+                                <option key={s} value={s}>{s}</option>
+                              ))}
+                            </select>
+                          )}
+                          {["draft", "pending", "confirmed", "processing"].includes(o.status) && (
                             <button
                               onClick={() => handleCancelOrder(o.id)}
                               className="text-red-600 hover:underline text-xs"
@@ -949,10 +952,10 @@ export default function AdminDashboard() {
                 </thead>
                 <tbody>
                   {products.map((p) => {
-                    const isLow = p.stock_quantity <= (p.low_stock_threshold || 10);
+                    const isLow = p.stock_quantity <= (p.low_stock_threshold ?? 10);
                     const edit = inventoryEdits[p.id] || { 
                       stock: p.stock_quantity, 
-                      threshold: p.low_stock_threshold || 10 
+                      threshold: p.low_stock_threshold ?? 10
                     };
                     return (
                       <tr key={p.id} className="border-b hover:bg-gray-50">
@@ -961,7 +964,7 @@ export default function AdminDashboard() {
                         <td className={`px-5 py-3 font-medium ${isLow ? "text-red-600" : ""}`}>
                           {p.stock_quantity}
                         </td>
-                        <td className="px-5 py-3">{p.low_stock_threshold || 10}</td>
+                        <td className="px-5 py-3">{p.low_stock_threshold ?? 10}</td>
                         <td className="px-5 py-3">
                           {isLow ? (
                             <span className="px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
@@ -1417,6 +1420,8 @@ export default function AdminDashboard() {
                   <input type="text" placeholder="Guest Name" value={draftOrderForm.guest_name} onChange={(e) => setDraftOrderForm({...draftOrderForm, guest_name: e.target.value})} className="border rounded-lg px-3 py-2" />
                   <input type="email" placeholder="Guest Email" value={draftOrderForm.guest_email} onChange={(e) => setDraftOrderForm({...draftOrderForm, guest_email: e.target.value})} className="border rounded-lg px-3 py-2" />
                   <input type="text" placeholder="Guest Mobile" value={draftOrderForm.guest_mobile} onChange={(e) => setDraftOrderForm({...draftOrderForm, guest_mobile: e.target.value})} className="border rounded-lg px-3 py-2" />
+                  <input type="text" placeholder="Country (for tax)" value={draftOrderForm.guest_country} onChange={(e) => setDraftOrderForm({...draftOrderForm, guest_country: e.target.value})} className="border rounded-lg px-3 py-2" />
+                  <input type="text" placeholder="State / Region (for tax)" value={draftOrderForm.guest_region} onChange={(e) => setDraftOrderForm({...draftOrderForm, guest_region: e.target.value})} className="border rounded-lg px-3 py-2" />
                 </div>
                 <textarea placeholder="Shipping Address" value={draftOrderForm.guest_address} onChange={(e) => setDraftOrderForm({...draftOrderForm, guest_address: e.target.value})} className="border rounded-lg px-3 py-2 w-full" rows="2" />
                 

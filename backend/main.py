@@ -1,15 +1,16 @@
 import os
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
-from typing import List, Optional, Union
+from datetime import datetime, timedelta, timezone
+from typing import List, Literal, Optional, Union
 from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, validator, Field
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum as SAEnum, inspect, text
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum as SAEnum, case, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, relationship, sessionmaker
+from sqlalchemy.exc import IntegrityError
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 import pyotp
@@ -58,6 +59,8 @@ class Product(Base):
     __tablename__ = "products"
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
+    sku = Column(String, nullable=True, unique=True, index=True)
+    slug = Column(String, nullable=True, unique=True, index=True)
     description = Column(Text)
     price = Column(Float, nullable=False)
     category = Column(String)
@@ -65,6 +68,7 @@ class Product(Base):
     stock_quantity = Column(Integer, default=0)
     low_stock_threshold = Column(Integer, default=5)
     status = Column(String, default="active")
+    is_featured = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -87,7 +91,15 @@ class Order(Base):
     __tablename__ = "orders"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
+    guest_email = Column(String, nullable=True)
+    guest_name = Column(String, nullable=True)
+    guest_mobile = Column(String, nullable=True)
+    guest_address = Column(Text, nullable=True)
+    guest_country = Column(String, nullable=True)
+    guest_region = Column(String, nullable=True)
     status = Column(String, default="pending")
+    subtotal = Column(Float, default=0.0)
+    tax = Column(Float, default=0.0)
     total = Column(Float, default=0.0)
     shipping_address = Column(Text)
     coupon_code = Column(String, nullable=True)
@@ -151,16 +163,21 @@ class Category(Base):
     __tablename__ = "categories"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, nullable=False)
+    slug = Column(String, unique=True, index=True, nullable=True)
     description = Column(Text)
     image_url = Column(String)
+    parent_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    parent = relationship("Category", remote_side=[id], backref="children")
 
 class TaxRule(Base):
     __tablename__ = "tax_rules"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     rate = Column(Float, nullable=False)
+    country = Column(String, nullable=True)
     region = Column(String)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -182,6 +199,9 @@ Base.metadata.create_all(bind=engine)
 if engine.dialect.name == "sqlite":
     user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
     order_columns = {column["name"] for column in inspect(engine).get_columns("orders")}
+    product_columns = {column["name"] for column in inspect(engine).get_columns("products")}
+    category_columns = {column["name"] for column in inspect(engine).get_columns("categories")}
+    tax_rule_columns = {column["name"] for column in inspect(engine).get_columns("tax_rules")}
     with engine.begin() as connection:
         if "address" not in user_columns:
             connection.execute(text("ALTER TABLE users ADD COLUMN address TEXT"))
@@ -191,6 +211,34 @@ if engine.dialect.name == "sqlite":
             connection.execute(text("ALTER TABLE orders ADD COLUMN payment_method VARCHAR DEFAULT 'cash_on_delivery'"))
         if "payment_status" not in order_columns:
             connection.execute(text("ALTER TABLE orders ADD COLUMN payment_status VARCHAR DEFAULT 'unpaid'"))
+        for column_name, column_type in (
+            ("guest_email", "VARCHAR"),
+            ("guest_name", "VARCHAR"),
+            ("guest_mobile", "VARCHAR"),
+            ("guest_address", "TEXT"),
+            ("guest_country", "VARCHAR"),
+            ("guest_region", "VARCHAR"),
+            ("subtotal", "FLOAT DEFAULT 0.0"),
+            ("tax", "FLOAT DEFAULT 0.0"),
+        ):
+            if column_name not in order_columns:
+                connection.execute(text(f"ALTER TABLE orders ADD COLUMN {column_name} {column_type}"))
+        for column_name, column_type in (
+            ("sku", "VARCHAR"),
+            ("slug", "VARCHAR"),
+            ("is_featured", "BOOLEAN DEFAULT 0"),
+        ):
+            if column_name not in product_columns:
+                connection.execute(text(f"ALTER TABLE products ADD COLUMN {column_name} {column_type}"))
+        if "slug" not in category_columns:
+            connection.execute(text("ALTER TABLE categories ADD COLUMN slug VARCHAR"))
+        if "parent_id" not in category_columns:
+            connection.execute(text("ALTER TABLE categories ADD COLUMN parent_id INTEGER"))
+        if "country" not in tax_rule_columns:
+            connection.execute(text("ALTER TABLE tax_rules ADD COLUMN country VARCHAR"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_products_sku ON products (sku)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_products_slug ON products (slug)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_categories_slug ON categories (slug)"))
 
 # ============== SCHEMAS ==============
 class Token(BaseModel):
@@ -206,6 +254,8 @@ class UserCreate(BaseModel):
     
     @validator('password')
     def password_strength(cls, v):
+        if len(v.encode('utf-8')) > 72:
+            raise ValueError('Password must not exceed 72 UTF-8 bytes')
         if len(v) < 8:
             raise ValueError('Password must be at least 8 characters')
         if not re.search(r'[A-Z]', v):
@@ -243,34 +293,44 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 class ProductCreate(BaseModel):
-    title: str
-    description: str
-    price: float
-    category: str
+    title: str = Field(min_length=1)
+    sku: Optional[str] = None
+    slug: Optional[str] = None
+    description: Optional[str] = None
+    price: float = Field(gt=0)
+    category: str = Field(min_length=1)
     image_url: Optional[str] = None
-    stock_quantity: int = 0
-    low_stock_threshold: int = 5
+    stock_quantity: int = Field(default=0, ge=0)
+    low_stock_threshold: int = Field(default=5, ge=0)
+    status: Literal["active", "draft", "archived", "out_of_stock"] = "active"
+    is_featured: bool = False
 
 class ProductUpdate(BaseModel):
     title: Optional[str] = None
+    sku: Optional[str] = None
+    slug: Optional[str] = None
     description: Optional[str] = None
-    price: Optional[float] = None
+    price: Optional[float] = Field(default=None, gt=0)
     category: Optional[str] = None
     image_url: Optional[str] = None
-    stock_quantity: Optional[int] = None
-    low_stock_threshold: Optional[int] = None
-    status: Optional[str] = None
+    stock_quantity: Optional[int] = Field(default=None, ge=0)
+    low_stock_threshold: Optional[int] = Field(default=None, ge=0)
+    status: Optional[Literal["active", "draft", "archived", "out_of_stock"]] = None
+    is_featured: Optional[bool] = None
 
 class ProductResponse(BaseModel):
     id: int
     title: str
-    description: str
+    sku: Optional[str] = None
+    slug: Optional[str] = None
+    description: Optional[str] = None
     price: float
-    category: str
+    category: Optional[str] = None
     image_url: Optional[str]
     stock_quantity: int
     low_stock_threshold: int
     status: str
+    is_featured: bool = False
     created_at: datetime
     
     class Config:
@@ -297,8 +357,8 @@ class CartResponse(BaseModel):
         from_attributes = True
 
 class ReviewCreate(BaseModel):
-    product_id: int
-    rating: int
+    product_id: int = Field(gt=0)
+    rating: int = Field(ge=1, le=5)
     comment: str
 
 class ReviewResponse(BaseModel):
@@ -325,6 +385,12 @@ class WishlistResponse(BaseModel):
 
 class OrderCreate(BaseModel):
     shipping_address: str = Field(min_length=1)
+    guest_email: Optional[EmailStr] = None
+    guest_name: Optional[str] = None
+    guest_mobile: Optional[str] = None
+    guest_address: Optional[str] = None
+    guest_country: Optional[str] = None
+    guest_region: Optional[str] = None
     coupon_code: Optional[str] = None
 
 class OrderListResponse(BaseModel):
@@ -333,19 +399,40 @@ class OrderListResponse(BaseModel):
     total: float
     created_at: datetime
     item_count: int
+    user_name: Optional[str] = None
+    guest_name: Optional[str] = None
+    guest_email: Optional[str] = None
+
+class OrderItemResponse(BaseModel):
+    id: int
+    product_id: int
+    quantity: int
+    price: float
+    product: Optional[ProductResponse] = None
+
+    class Config:
+        from_attributes = True
 
 class OrderResponse(BaseModel):
     id: int
     user_id: Optional[int]
+    guest_email: Optional[str] = None
+    guest_name: Optional[str] = None
+    guest_mobile: Optional[str] = None
+    guest_address: Optional[str] = None
+    guest_country: Optional[str] = None
+    guest_region: Optional[str] = None
     status: str
+    subtotal: float
+    tax: float
     total: float
-    shipping_address: str
+    shipping_address: Optional[str]
     coupon_code: Optional[str]
     discount: float
     payment_method: str = "cash_on_delivery"
     payment_status: str = "unpaid"
     created_at: datetime
-    items: list
+    items: List[OrderItemResponse]
     
     class Config:
         from_attributes = True
@@ -356,7 +443,7 @@ class OrderStatusUpdate(BaseModel):
 class DraftOrderItem(BaseModel):
     product_id: int = Field(gt=0)
     quantity: int = Field(gt=0)
-    unit_price: Optional[float] = None
+    unit_price: Optional[float] = Field(default=None, ge=0)
 
 class DraftOrderCreate(BaseModel):
     user_id: Optional[int] = None
@@ -366,6 +453,8 @@ class DraftOrderCreate(BaseModel):
     guest_name: Optional[str] = None
     guest_mobile: Optional[str] = None
     guest_address: Optional[str] = None
+    guest_country: Optional[str] = None
+    guest_region: Optional[str] = None
     coupon_code: Optional[str] = None
 
 class CouponCreate(BaseModel):
@@ -379,13 +468,24 @@ class CouponCreate(BaseModel):
 
 class CouponValidate(BaseModel):
     code: str
-    order_total: float
+    order_total: float = Field(ge=0)
 
 class CouponApplyResponse(BaseModel):
     valid: bool
     discount_amount: float
     final_total: float
     message: str
+
+class TaxEstimateRequest(BaseModel):
+    country: Optional[str] = None
+    region: Optional[str] = None
+    subtotal: float = Field(ge=0)
+    discount: float = Field(default=0, ge=0)
+
+class TaxEstimateResponse(BaseModel):
+    tax_rate: float
+    tax: float
+    total: float
 
 class CouponResponse(BaseModel):
     id: int
@@ -403,8 +503,8 @@ class CouponResponse(BaseModel):
         from_attributes = True
 
 class InventoryUpdate(BaseModel):
-    stock_quantity: int
-    low_stock_threshold: Optional[int] = None
+    stock_quantity: int = Field(ge=0)
+    low_stock_threshold: Optional[int] = Field(default=None, ge=0)
 
 class LowStockResponse(BaseModel):
     id: int
@@ -417,29 +517,60 @@ class UserAdminCreate(BaseModel):
     email: EmailStr
     name: str
     password: str
-    role: str = "user"
+    address: Optional[str] = None
+    mobile: Optional[str] = None
+    role: Literal["customer", "user", "manager", "admin"] = "customer"
+
+    @validator("password")
+    def admin_password_strength(cls, value):
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Password must not exceed 72 UTF-8 bytes")
+        if not check_password_strength(value)["valid"]:
+            raise ValueError(check_password_strength(value)["message"])
+        return value
 
 class UserAdminUpdate(BaseModel):
     name: Optional[str] = None
-    role: Optional[str] = None
+    email: Optional[EmailStr] = None
+    password: Optional[str] = None
+    address: Optional[str] = None
+    mobile: Optional[str] = None
+    role: Optional[Literal["customer", "user", "manager", "admin"]] = None
     is_admin: Optional[bool] = None
 
+    @validator("password")
+    def admin_update_password_strength(cls, value):
+        if value in (None, ""):
+            return value
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Password must not exceed 72 UTF-8 bytes")
+        strength = check_password_strength(value)
+        if not strength["valid"]:
+            raise ValueError(strength["message"])
+        return value
+
 class CategoryCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1)
+    slug: Optional[str] = None
     description: Optional[str] = None
     image_url: Optional[str] = None
+    parent_id: Optional[int] = Field(default=None, gt=0)
 
 class CategoryUpdate(BaseModel):
     name: Optional[str] = None
+    slug: Optional[str] = None
     description: Optional[str] = None
     image_url: Optional[str] = None
     is_active: Optional[bool] = None
+    parent_id: Optional[int] = Field(default=None, gt=0)
 
 class CategoryResponse(BaseModel):
     id: int
     name: str
+    slug: Optional[str] = None
     description: Optional[str]
     image_url: Optional[str]
+    parent_id: Optional[int] = None
     is_active: bool
     created_at: datetime
     
@@ -448,12 +579,14 @@ class CategoryResponse(BaseModel):
 
 class TaxRuleCreate(BaseModel):
     name: str
-    rate: float
+    rate: float = Field(ge=0, le=100)
+    country: Optional[str] = None
     region: Optional[str] = None
 
 class TaxRuleUpdate(BaseModel):
     name: Optional[str] = None
-    rate: Optional[float] = None
+    rate: Optional[float] = Field(default=None, ge=0, le=100)
+    country: Optional[str] = None
     region: Optional[str] = None
     is_active: Optional[bool] = None
 
@@ -461,6 +594,7 @@ class TaxRuleResponse(BaseModel):
     id: int
     name: str
     rate: float
+    country: Optional[str] = None
     region: Optional[str]
     is_active: bool
     created_at: datetime
@@ -470,7 +604,7 @@ class TaxRuleResponse(BaseModel):
 
 class AuditLogResponse(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int]
     user_name: Optional[str]
     action: str
     entity_type: str
@@ -497,7 +631,10 @@ def get_db():
 
 # ============== AUTH FUNCTIONS ==============
 def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except (TypeError, ValueError):
+        return False
 
 def get_password_hash(password):
     return pwd_context.hash(password)
@@ -579,11 +716,12 @@ async def get_current_manager_user(current_user: User = Depends(get_current_acti
 
 # ============== CRUD FUNCTIONS ==============
 def create_user(db: Session, user: UserCreate, is_admin: int = 0):
-    if get_user_by_email(db, user.email):
+    email = str(user.email).strip().lower()
+    if get_user_by_email(db, email):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
     hashed_password = get_password_hash(user.password)
     db_user = User(
-        email=user.email,
+        email=email,
         name=user.name,
         hashed_password=hashed_password,
         address=user.address,
@@ -592,12 +730,16 @@ def create_user(db: Session, user: UserCreate, is_admin: int = 0):
         role="admin" if is_admin else "user"
     )
     db.add(db_user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
     db.refresh(db_user)
     return db_user
 
 def get_user_by_email(db: Session, email: str):
-    return db.query(User).filter(User.email == email).first()
+    return db.query(User).filter(User.email == email.strip().lower()).first()
 
 def get_user_by_id(db: Session, user_id: int):
     return db.query(User).filter(User.id == user_id).first()
@@ -611,16 +753,25 @@ def get_users(db: Session, skip: int = 0, limit: int = 100, search: Optional[str
     return query.offset(skip).limit(limit).all()
 
 def create_admin_user(db: Session, user: UserAdminCreate):
+    email = str(user.email).strip().lower()
+    if get_user_by_email(db, email):
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
     hashed_password = get_password_hash(user.password)
     db_user = User(
-        email=user.email,
+        email=email,
         name=user.name,
         hashed_password=hashed_password,
+        address=user.address,
+        mobile=user.mobile,
         role=user.role,
         is_admin=(user.role == "admin")
     )
     db.add(db_user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
     db.refresh(db_user)
     return db_user
 
@@ -628,14 +779,30 @@ def update_user_admin(db: Session, user_id: int, update: UserAdminUpdate):
     db_user = get_user_by_id(db, user_id)
     if not db_user:
         return None
-    if update.name is not None:
-        db_user.name = update.name
-    if update.role is not None:
-        db_user.role = update.role
-        db_user.is_admin = (update.role == "admin")
+    update_data = update.dict(exclude_unset=True)
+    if "email" in update_data and update_data["email"] is not None:
+        email = str(update_data["email"]).strip().lower()
+        existing = db.query(User).filter(User.email == email, User.id != user_id).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="An account with this email already exists")
+        db_user.email = email
+    if "password" in update_data:
+        if update_data["password"]:
+            db_user.hashed_password = get_password_hash(update_data["password"])
+        update_data.pop("password")
+    for key in ("name", "address", "mobile"):
+        if key in update_data:
+            setattr(db_user, key, update_data[key])
+    if "role" in update_data and update_data["role"] is not None:
+        db_user.role = update_data["role"]
+        db_user.is_admin = (update_data["role"] == "admin")
     if update.is_admin is not None:
         db_user.is_admin = update.is_admin
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
     db.refresh(db_user)
     return db_user
 
@@ -671,19 +838,26 @@ def get_products(db: Session, skip: int = 0, limit: int = 100, category: Optiona
     query = db.query(Product)
     if category:
         query = query.filter(Product.category == category)
-    if status:
+    if status is not None:
         query = query.filter(Product.status == status)
-    else:
-        query = query.filter(Product.status == "active")
     return query.offset(skip).limit(limit).all()
 
 def get_product(db: Session, product_id: int):
     return db.query(Product).filter(Product.id == product_id).first()
 
 def create_product(db: Session, product: ProductCreate):
-    db_product = Product(**product.dict())
+    payload = product.dict()
+    for field in ("sku", "slug"):
+        payload[field] = payload[field].strip() or None if payload[field] is not None else None
+    if payload["stock_quantity"] == 0 and payload["status"] == "active":
+        payload["status"] = "out_of_stock"
+    db_product = Product(**payload)
     db.add(db_product)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A product with this SKU or slug already exists")
     db.refresh(db_product)
     return db_product
 
@@ -692,10 +866,23 @@ def update_product(db: Session, product_id: int, product: ProductUpdate):
     if not db_product:
         return None
     update_data = product.dict(exclude_unset=True)
+    for field in ("sku", "slug"):
+        if field in update_data and update_data[field] is not None:
+            update_data[field] = update_data[field].strip() or None
+    resulting_stock = update_data.get("stock_quantity", db_product.stock_quantity)
+    resulting_status = update_data.get("status", db_product.status)
+    if resulting_stock == 0 and resulting_status == "active":
+        update_data["status"] = "out_of_stock"
+    elif resulting_stock > 0 and "status" not in update_data and db_product.status == "out_of_stock":
+        update_data["status"] = "active"
     for key, value in update_data.items():
         setattr(db_product, key, value)
     db_product.updated_at = datetime.utcnow()
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A product with this SKU or slug already exists")
     db.refresh(db_product)
     return db_product
 
@@ -703,7 +890,11 @@ def delete_product(db: Session, product_id: int):
     db_product = get_product(db, product_id)
     if not db_product:
         return None
-    db.delete(db_product)
+    # Preserve products referenced by historical order items and analytics.
+    db_product.status = "archived"
+    db_product.updated_at = datetime.utcnow()
+    db.query(Cart).filter(Cart.product_id == product_id).delete(synchronize_session=False)
+    db.query(Wishlist).filter(Wishlist.product_id == product_id).delete(synchronize_session=False)
     db.commit()
     return db_product
 
@@ -759,6 +950,8 @@ def update_cart_item(db: Session, cart_id: int, user_id: int, quantity: int):
     cart_item = db.query(Cart).filter(Cart.id == cart_id, Cart.user_id == user_id).first()
     if not cart_item:
         return None
+    if cart_item.product.status != "active":
+        raise HTTPException(status_code=400, detail="Product is no longer available")
     if quantity > cart_item.product.stock_quantity:
         raise HTTPException(status_code=400, detail="Requested quantity exceeds available stock")
     cart_item.quantity = quantity
@@ -782,6 +975,9 @@ def get_reviews(db: Session, product_id: int):
     return db.query(Review).filter(Review.product_id == product_id).all()
 
 def create_review(db: Session, user_id: int, review: ReviewCreate):
+    product = get_product(db, review.product_id)
+    if not product or product.status != "active":
+        raise HTTPException(status_code=404, detail="Product not found")
     db_review = Review(
         user_id=user_id,
         product_id=review.product_id,
@@ -805,6 +1001,9 @@ def get_wishlist(db: Session, user_id: int):
     return db.query(Wishlist).filter(Wishlist.user_id == user_id).all()
 
 def add_to_wishlist(db: Session, user_id: int, product_id: int):
+    product = get_product(db, product_id)
+    if not product or product.status != "active":
+        raise HTTPException(status_code=404, detail="Product not found")
     existing = db.query(Wishlist).filter(
         Wishlist.user_id == user_id,
         Wishlist.product_id == product_id
@@ -846,24 +1045,31 @@ def create_order(db: Session, user_id: int, order: OrderCreate):
     
     total = sum(item.product.price * item.quantity for item in cart_items)
     discount = 0
+    coupon_code = order.coupon_code.strip().upper() if order.coupon_code else None
     
-    if order.coupon_code:
-        coupon_result = validate_coupon(db, order.coupon_code, total)
-        if coupon_result["valid"]:
-            discount = coupon_result["discount_amount"]
-            coupon = db.query(Coupon).filter(Coupon.code == order.coupon_code).first()
-            coupon.used_count += 1
-        else:
-            raise HTTPException(status_code=400, detail=coupon_result["message"])
+    if coupon_code:
+        coupon_result = reserve_coupon_usage(db, coupon_code, total)
+        discount = coupon_result["discount_amount"]
     
-    final_total = total - discount
+    discount = round(discount, 2)
+    tax_rate = get_tax_rate(db, order.guest_country, order.guest_region)
+    tax = round((total - discount) * tax_rate / 100, 2)
+    final_total = round(total - discount + tax, 2)
     
     db_order = Order(
         user_id=user_id,
+        subtotal=round(total, 2),
+        tax=tax,
         total=final_total,
         shipping_address=order.shipping_address,
-        coupon_code=order.coupon_code,
-        discount=discount
+        coupon_code=coupon_code,
+        discount=discount,
+        guest_email=str(order.guest_email).strip().lower() if order.guest_email else None,
+        guest_name=order.guest_name,
+        guest_mobile=order.guest_mobile,
+        guest_address=order.guest_address,
+        guest_country=order.guest_country,
+        guest_region=order.guest_region,
     )
     db.add(db_order)
     for cart_item in cart_items:
@@ -873,9 +1079,34 @@ def create_order(db: Session, user_id: int, order: OrderCreate):
             quantity=cart_item.quantity,
             price=cart_item.product.price
         ))
-        cart_item.product.stock_quantity -= cart_item.quantity
     try:
+        # Use a conditional database update to keep concurrent checkouts from
+        # overselling stock after both requests read the same inventory count.
+        for cart_item in cart_items:
+            updated = db.query(Product).filter(
+                Product.id == cart_item.product_id,
+                Product.status == "active",
+                Product.stock_quantity >= cart_item.quantity,
+            ).update(
+                {
+                    Product.stock_quantity: Product.stock_quantity - cart_item.quantity,
+                    Product.status: case(
+                        (Product.stock_quantity - cart_item.quantity == 0, "out_of_stock"),
+                        else_=Product.status,
+                    ),
+                },
+                synchronize_session=False,
+            )
+            if updated != 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Insufficient stock for {cart_item.product.title}",
+                )
+        db.query(Cart).filter(Cart.user_id == user_id).delete(synchronize_session=False)
         db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception:
         db.rollback()
         raise
@@ -898,6 +1129,30 @@ def update_order_status(db: Session, order_id: int, status_update: OrderStatusUp
     allowed_statuses = {"pending", "confirmed", "processing", "shipped", "delivered"}
     if status_update.status not in allowed_statuses:
         raise HTTPException(status_code=400, detail="Use the cancellation or refund action for terminal order states")
+    if db_order.status in {"cancelled", "refunded", "delivered"}:
+        raise HTTPException(status_code=400, detail="A completed, cancelled, or refunded order cannot be reopened")
+    if db_order.status == "draft":
+        subtotal = sum(item.price * item.quantity for item in db_order.items)
+        if db_order.coupon_code:
+            reserve_coupon_usage(db, db_order.coupon_code, subtotal)
+        for item in db_order.items:
+            updated = db.query(Product).filter(
+                Product.id == item.product_id,
+                Product.status == "active",
+                Product.stock_quantity >= item.quantity,
+            ).update(
+                {
+                    Product.stock_quantity: Product.stock_quantity - item.quantity,
+                    Product.status: case(
+                        (Product.stock_quantity - item.quantity == 0, "out_of_stock"),
+                        else_=Product.status,
+                    ),
+                },
+                synchronize_session=False,
+            )
+            if updated != 1:
+                db.rollback()
+                raise HTTPException(status_code=400, detail=f"Insufficient stock for {item.product.title}")
     db_order.status = status_update.status
     db_order.updated_at = datetime.utcnow()
     db.commit()
@@ -912,14 +1167,21 @@ def create_draft_order(db: Session, order: DraftOrderCreate):
         product_id = item.product_id
         quantity = item.quantity
         product = get_product(db, product_id)
-        if not product:
+        if not product or product.status != "active":
             raise HTTPException(status_code=404, detail=f"Product {product_id} not found")
         products[product_id] = product
-    total = sum(products[item.product_id].price * item.quantity for item in order.items)
+    if order.user_id is not None and not get_user_by_id(db, order.user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    unit_prices = [
+        item.unit_price if item.unit_price is not None else products[item.product_id].price
+        for item in order.items
+    ]
+    total = sum(unit_price * item.quantity for unit_price, item in zip(unit_prices, order.items))
     discount = 0
+    coupon_code = order.coupon_code.strip().upper() if order.coupon_code else None
     
-    if order.coupon_code:
-        coupon_result = validate_coupon(db, order.coupon_code, total)
+    if coupon_code:
+        coupon_result = validate_coupon(db, coupon_code, total)
         if coupon_result["valid"]:
             discount = coupon_result["discount_amount"]
         else:
@@ -932,27 +1194,32 @@ def create_draft_order(db: Session, order: DraftOrderCreate):
     if not shipping_address:
         raise HTTPException(status_code=400, detail="Shipping details are required")
     
+    discount = round(discount, 2)
+    tax_rate = get_tax_rate(db, order.guest_country, order.guest_region)
+    tax = round((total - discount) * tax_rate / 100, 2)
     db_order = Order(
         user_id=order.user_id,
-        total=total - discount,
+        subtotal=round(total, 2),
+        tax=tax,
+        total=round(total - discount + tax, 2),
         shipping_address=shipping_address,
-        coupon_code=order.coupon_code,
+        coupon_code=coupon_code,
         discount=discount,
-        status="draft"
+        status="draft",
+        guest_email=str(order.guest_email).strip().lower() if order.guest_email else None,
+        guest_name=order.guest_name,
+        guest_mobile=order.guest_mobile,
+        guest_address=order.guest_address,
+        guest_country=order.guest_country,
+        guest_region=order.guest_region,
     )
     db.add(db_order)
-    db.commit()
-    db.refresh(db_order)
-    
-    for item in order.items:
-        order_item = OrderItem(
-            order_id=db_order.id,
+    for unit_price, item in zip(unit_prices, order.items):
+        db_order.items.append(OrderItem(
             product_id=item.product_id,
             quantity=item.quantity,
-            price=products[item.product_id].price
-        )
-        db.add(order_item)
-    
+            price=unit_price,
+        ))
     db.commit()
     db.refresh(db_order)
     return db_order
@@ -965,20 +1232,25 @@ def cancel_order(db: Session, order_id: int):
         return db_order
     if db_order.payment_status == "paid":
         raise HTTPException(status_code=400, detail="Paid orders must be refunded instead of cancelled")
-    if db_order.status not in {"pending", "confirmed", "processing"}:
-        raise HTTPException(status_code=400, detail="Only pending, confirmed, or processing orders can be cancelled")
+    if db_order.status not in {"draft", "pending", "confirmed", "processing"}:
+        raise HTTPException(status_code=400, detail="Only draft, pending, confirmed, or processing orders can be cancelled")
+    had_reserved_inventory = db_order.status != "draft"
     db_order.status = "cancelled"
-    if db_order.payment_status == "pending":
+    if db_order.payment_status in {"pending", "unpaid"}:
         db_order.payment_status = "cancelled"
+    db_order.updated_at = datetime.utcnow()
+
+    if had_reserved_inventory:
+        for item in db_order.items:
+            product = item.product
+            if product:
+                product.stock_quantity += item.quantity
+                if product.status == "out_of_stock":
+                    product.status = "active"
         if db_order.coupon_code:
             coupon = db.query(Coupon).filter(Coupon.code == db_order.coupon_code).first()
             if coupon and coupon.used_count > 0:
                 coupon.used_count -= 1
-    db_order.updated_at = datetime.utcnow()
-    
-    for item in db_order.items:
-        product = item.product
-        product.stock_quantity += item.quantity
     
     db.commit()
     db.refresh(db_order)
@@ -989,11 +1261,15 @@ def refund_order(db: Session, order_id: int):
     if not db_order or db_order.status != "delivered":
         return None
     db_order.status = "refunded"
+    db_order.payment_status = "refunded"
     db_order.updated_at = datetime.utcnow()
     
     for item in db_order.items:
         product = item.product
-        product.stock_quantity += item.quantity
+        if product:
+            product.stock_quantity += item.quantity
+            if product.status == "out_of_stock":
+                product.status = "active"
     
     db.commit()
     db.refresh(db_order)
@@ -1002,6 +1278,10 @@ def refund_order(db: Session, order_id: int):
 def create_coupon(db: Session, coupon: CouponCreate):
     payload = coupon.dict()
     payload["code"] = payload["code"].strip().upper()
+    for field in ("valid_from", "valid_until"):
+        value = payload[field]
+        if value.tzinfo is not None and value.utcoffset() is not None:
+            payload[field] = value.astimezone(timezone.utc).replace(tzinfo=None)
     if not payload["code"]:
         raise HTTPException(status_code=400, detail="Coupon code is required")
     if payload["valid_until"] <= payload["valid_from"]:
@@ -1026,7 +1306,7 @@ def validate_coupon(db: Session, code: str, order_total: float):
     if not coupon.is_active:
         return {"valid": False, "discount_amount": 0, "final_total": order_total, "message": "Coupon is not active"}
     
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     if now < coupon.valid_from or now > coupon.valid_until:
         return {"valid": False, "discount_amount": 0, "final_total": order_total, "message": "Coupon has expired"}
     
@@ -1039,9 +1319,31 @@ def validate_coupon(db: Session, code: str, order_total: float):
     discount = order_total * (coupon.discount_percent / 100)
     if coupon.max_discount and discount > coupon.max_discount:
         discount = coupon.max_discount
+    discount = round(discount, 2)
     
-    final_total = order_total - discount
+    final_total = round(order_total - discount, 2)
     return {"valid": True, "discount_amount": discount, "final_total": final_total, "message": "Coupon applied successfully"}
+
+def reserve_coupon_usage(db: Session, code: str, order_total: float):
+    result = validate_coupon(db, code, order_total)
+    if not result["valid"]:
+        raise HTTPException(status_code=400, detail=result["message"])
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    updated = db.query(Coupon).filter(
+        Coupon.code == code.strip().upper(),
+        Coupon.is_active.is_(True),
+        Coupon.used_count < Coupon.usage_limit,
+        Coupon.valid_from <= now,
+        Coupon.valid_until >= now,
+        Coupon.min_order_amount <= order_total,
+    ).update(
+        {Coupon.used_count: Coupon.used_count + 1},
+        synchronize_session=False,
+    )
+    if updated != 1:
+        raise HTTPException(status_code=400, detail="Coupon usage limit reached")
+    return result
 
 def delete_coupon(db: Session, coupon_id: int):
     coupon = db.query(Coupon).filter(Coupon.id == coupon_id).first()
@@ -1056,6 +1358,10 @@ def update_inventory(db: Session, product_id: int, stock_quantity: int, low_stoc
     if not product:
         return None
     product.stock_quantity = stock_quantity
+    if stock_quantity == 0 and product.status == "active":
+        product.status = "out_of_stock"
+    elif stock_quantity > 0 and product.status == "out_of_stock":
+        product.status = "active"
     if low_stock_threshold is not None:
         product.low_stock_threshold = low_stock_threshold
     db.commit()
@@ -1101,6 +1407,8 @@ def get_top_products(db: Session, limit: int = 5):
     
     for order in orders:
         for item in order.items:
+            if item.product is None:
+                continue
             if item.product_id in product_sales:
                 product_sales[item.product_id]["quantity"] += item.quantity
                 product_sales[item.product_id]["revenue"] += item.quantity * item.price
@@ -1128,9 +1436,25 @@ def get_recent_orders(db: Session, limit: int = 10):
     return db.query(Order).order_by(Order.created_at.desc()).limit(limit).all()
 
 def create_category(db: Session, category: CategoryCreate):
-    db_category = Category(**category.dict())
+    payload = category.dict()
+    payload["name"] = payload["name"].strip()
+    if not payload["name"]:
+        raise HTTPException(status_code=400, detail="Category name is required")
+    slug = (payload["slug"] or "").strip().lower()
+    payload["slug"] = slug or re.sub(r"[^a-z0-9]+", "-", payload["name"].lower()).strip("-") or None
+    if payload["parent_id"] is not None and not get_category(db, payload["parent_id"]):
+        raise HTTPException(status_code=404, detail="Parent category not found")
+    if db.query(Category).filter(Category.name == payload["name"]).first():
+        raise HTTPException(status_code=409, detail="A category with this name already exists")
+    if payload["slug"] and db.query(Category).filter(Category.slug == payload["slug"]).first():
+        raise HTTPException(status_code=409, detail="A category with this slug already exists")
+    db_category = Category(**payload)
     db.add(db_category)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A category with this name or slug already exists")
     db.refresh(db_category)
     return db_category
 
@@ -1145,9 +1469,42 @@ def update_category(db: Session, category_id: int, update: CategoryUpdate):
     if not db_category:
         return None
     update_data = update.dict(exclude_unset=True)
+    if "name" in update_data and update_data["name"] is not None:
+        update_data["name"] = update_data["name"].strip()
+        if not update_data["name"]:
+            raise HTTPException(status_code=400, detail="Category name is required")
+    if "slug" in update_data:
+        slug = (update_data["slug"] or "").strip().lower()
+        name = update_data.get("name", db_category.name)
+        update_data["slug"] = slug or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or None
+    if update_data.get("parent_id") is not None:
+        parent_id = update_data["parent_id"]
+        if parent_id == category_id or not get_category(db, parent_id):
+            raise HTTPException(status_code=400, detail="Invalid parent category")
+        parent = get_category(db, parent_id)
+        seen = set()
+        while parent is not None and parent.id not in seen:
+            if parent.id == category_id:
+                raise HTTPException(status_code=400, detail="A category cannot be its own ancestor")
+            seen.add(parent.id)
+            parent = parent.parent
+    new_name = update_data.get("name", db_category.name)
+    new_slug = update_data.get("slug", db_category.slug)
+    if new_name != db_category.name and db.query(Category).filter(
+        Category.name == new_name, Category.id != category_id
+    ).first():
+        raise HTTPException(status_code=409, detail="A category with this name already exists")
+    if new_slug and new_slug != db_category.slug and db.query(Category).filter(
+        Category.slug == new_slug, Category.id != category_id
+    ).first():
+        raise HTTPException(status_code=409, detail="A category with this slug already exists")
     for key, value in update_data.items():
         setattr(db_category, key, value)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A category with this name or slug already exists")
     db.refresh(db_category)
     return db_category
 
@@ -1168,6 +1525,26 @@ def create_tax_rule(db: Session, tax: TaxRuleCreate):
 
 def get_tax_rules(db: Session):
     return db.query(TaxRule).all()
+
+def get_tax_rate(db: Session, country: Optional[str], region: Optional[str]) -> float:
+    country_key = (country or "").strip().casefold()
+    region_key = (region or "").strip().casefold()
+    matching_rules = []
+    for rule in db.query(TaxRule).filter(TaxRule.is_active.is_(True)).all():
+        rule_country = (rule.country or "").strip().casefold()
+        rule_region = (rule.region or "").strip().casefold()
+        if rule_country and (not country_key or rule_country != country_key):
+            continue
+        if rule_region and (not region_key or rule_region != region_key):
+            continue
+        matching_rules.append(rule)
+    if not matching_rules:
+        return 0.0
+    selected_rule = max(
+        matching_rules,
+        key=lambda rule: (bool(rule.country), bool(rule.region), rule.created_at or datetime.min, rule.id),
+    )
+    return float(selected_rule.rate)
 
 def get_tax_rule(db: Session, tax_id: int):
     return db.query(TaxRule).filter(TaxRule.id == tax_id).first()
@@ -1245,6 +1622,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         )
     if user.is_banned:
         raise HTTPException(status_code=403, detail="Account has been banned")
+    if user.two_factor_enabled:
+        raise HTTPException(status_code=403, detail="Two-factor authentication required")
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
@@ -1261,6 +1640,8 @@ def read_current_user(current_user: User = Depends(get_current_active_user)):
 @app.post("/api/2fa/setup", tags=["2FA"])
 def setup_2fa(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Generate TOTP secret and provisioning URI for QR code"""
+    if current_user.two_factor_enabled:
+        raise HTTPException(status_code=409, detail="Two-factor authentication is already enabled")
     secret = generate_totp_secret()
     current_user.two_factor_secret = secret
     current_user.two_factor_enabled = 0
@@ -1287,10 +1668,10 @@ def login_2fa_verify(payload: TwoFactorLoginVerify, db: Session = Depends(get_db
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if user.is_banned:
         raise HTTPException(status_code=403, detail="Account has been banned")
-    if user.two_factor_enabled:
-        raise HTTPException(status_code=403, detail="Two-factor authentication required")
     if not user.two_factor_enabled:
         raise HTTPException(status_code=400, detail="2FA not enabled for this user")
+    if not user.two_factor_secret:
+        raise HTTPException(status_code=400, detail="2FA is not configured for this user")
     if not verify_totp(user.two_factor_secret, payload.token):
         raise HTTPException(status_code=401, detail="Invalid OTP")
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1306,13 +1687,13 @@ def read_products(
     db: Session = Depends(get_db)
 ):
     """Get all products with optional category filter"""
-    return get_products(db, skip=skip, limit=limit, category=category)
+    return get_products(db, skip=skip, limit=limit, category=category, status="active")
 
 @app.get("/api/products/{product_id}", response_model=ProductResponse, tags=["Products"])
 def read_product(product_id: int, db: Session = Depends(get_db)):
     """Get a specific product by ID"""
     product = get_product(db, product_id)
-    if not product:
+    if not product or product.status != "active":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Product not found"
@@ -1357,8 +1738,8 @@ def delete_existing_product(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Product not found"
         )
-    log_audit_action(db, current_user.id, "DELETE", "Product", product_id, f"Deleted product {product.title}")
-    return {"message": "Product deleted successfully"}
+    log_audit_action(db, current_user.id, "ARCHIVE", "Product", product_id, f"Archived product {product.title}")
+    return {"message": "Product archived successfully"}
 
 # ============== ADMIN PRODUCT ENDPOINTS ==============
 @app.get("/api/admin/products", response_model=List[ProductResponse], tags=["Admin"])
@@ -1535,7 +1916,6 @@ def place_order(
 ):
     """Place a new order from cart items"""
     db_order = create_order(db, current_user.id, order)
-    clear_cart(db, current_user.id)
     return db_order
 
 @app.get("/api/orders/my", response_model=List[OrderListResponse], tags=["Orders"])
@@ -1551,7 +1931,10 @@ def read_my_orders(
             "status": o.status,
             "total": float(o.total),
             "created_at": o.created_at,
-            "item_count": len(o.items)
+            "item_count": sum(item.quantity for item in o.items),
+            "user_name": o.user.name if o.user else None,
+            "guest_name": o.guest_name,
+            "guest_email": o.guest_email,
         }
         for o in orders
     ]
@@ -1585,7 +1968,10 @@ def read_all_orders(
             "status": o.status,
             "total": float(o.total),
             "created_at": o.created_at,
-            "item_count": len(o.items)
+            "item_count": sum(item.quantity for item in o.items),
+            "user_name": o.user.name if o.user else None,
+            "guest_name": o.guest_name,
+            "guest_email": o.guest_email,
         }
         for o in orders
     ]
@@ -1669,6 +2055,18 @@ def validate_coupon_code(
     """Validate a coupon code and return discount"""
     result = validate_coupon(db, data.code, data.order_total)
     return result
+
+@app.post("/api/tax/estimate", response_model=TaxEstimateResponse, tags=["Tax"])
+def estimate_tax(data: TaxEstimateRequest, db: Session = Depends(get_db)):
+    if data.discount > data.subtotal:
+        raise HTTPException(status_code=400, detail="Discount cannot exceed the subtotal")
+    tax_rate = get_tax_rate(db, data.country, data.region)
+    tax = round((data.subtotal - data.discount) * tax_rate / 100, 2)
+    return {
+        "tax_rate": tax_rate,
+        "tax": tax,
+        "total": round(data.subtotal - data.discount + tax, 2),
+    }
 
 @app.delete("/api/coupons/{coupon_id}", response_model=Message, tags=["Admin"])
 def remove_coupon(
@@ -1760,6 +2158,8 @@ def delete_user_admin(
     db: Session = Depends(get_db)
 ):
     """Delete a user (admin only)"""
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own administrator account")
     success = delete_user(db, user_id)
     if not success:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1931,7 +2331,7 @@ def admin_analytics(
                 "status": o.status,
                 "total": float(o.total),
                 "created_at": o.created_at,
-                "item_count": len(o.items)
+                "item_count": sum(item.quantity for item in o.items)
             }
             for o in recent
         ],

@@ -31,14 +31,14 @@ const LoginForm = () => {
         ? await login2FA(formData.email, formData.password, otp)
         : await loginUser(formData);
       localStorage.setItem("token", data.access_token);
+      let cartWarning = "";
       try {
         await mergeGuestCart();
       } catch (syncError) {
-        localStorage.removeItem("token");
-        throw new Error(`Login could not finish because your saved cart could not be synced: ${syncError.message}`);
+        cartWarning = ` Your saved cart could not be synced (${syncError.message}); you can still use your account.`;
       }
       window.dispatchEvent(new Event("auth-changed"));
-      alert("Login successful!");
+      alert(`Login successful!${cartWarning}`);
       navigate("/");
     } catch (err) {
       if (err.message === "Two-factor authentication required") {

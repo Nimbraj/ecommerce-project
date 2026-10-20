@@ -68,7 +68,7 @@ export default function Wishlist() {
                   alt={item.product.title}
                   className="w-full h-48 object-cover cursor-pointer"
                   onClick={() => navigate(`/product/${item.product.id}`)}
-                  onError={(e) => { e.target.src = '/assets/8.jpg'; }}
+                  onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = assetUrl('/assets/8.jpg'); }}
                 />
                 <div className="p-4">
                   <h3 className="font-semibold text-gray-800 mb-1">{item.product.title}</h3>

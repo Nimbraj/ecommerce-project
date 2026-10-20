@@ -2,7 +2,7 @@ import React from 'react'
 import { motion } from 'framer-motion'
 import CardList from './Component/CardList'
 import Moustselling from './Component/Moustselling'
-import Footer from './Component/footer'
+import Footer from './Component/Footer'
 
 const Product = () => {
   return (

@@ -47,10 +47,16 @@ const getErrorMessage = (detail, fallback) => {
 
 // ============== GUEST CART HELPERS ==============
 const GUEST_CART_KEY = 'guest_cart';
+const notifyCartChanged = () => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('cart-changed'));
+  }
+};
 
 const getGuestCart = () => {
   try {
-    return JSON.parse(localStorage.getItem(GUEST_CART_KEY)) || [];
+    const cart = JSON.parse(localStorage.getItem(GUEST_CART_KEY)) || [];
+    return Array.isArray(cart) ? cart : [];
   } catch {
     return [];
   }
@@ -74,17 +80,20 @@ const addToGuestCart = (product, quantity = 1) => {
     });
   }
   saveGuestCart(cart);
+  notifyCartChanged();
   return cart;
 };
 
 const removeFromGuestCart = (cartId) => {
   const cart = getGuestCart().filter((item) => item.id !== cartId);
   saveGuestCart(cart);
+  notifyCartChanged();
   return cart;
 };
 
 const clearGuestCart = () => {
   localStorage.removeItem(GUEST_CART_KEY);
+  notifyCartChanged();
   return [];
 };
 
@@ -215,33 +224,43 @@ export const addToCartAPI = async (productId, quantity = 1, product = null) => {
     }
     return addToGuestCart(product, quantity);
   }
-  return apiRequest('/cart', {
+  const item = await apiRequest('/cart', {
     method: 'POST',
     body: { product_id: productId, quantity },
   });
+  notifyCartChanged();
+  return item;
 };
 
-export const updateCartItemAPI = (cartId, quantity) => apiRequest(`/cart/${cartId}`, {
-  method: 'PUT',
-  body: { quantity },
-});
+export const updateCartItemAPI = async (cartId, quantity) => {
+  const item = await apiRequest(`/cart/${cartId}`, {
+    method: 'PUT',
+    body: { quantity },
+  });
+  notifyCartChanged();
+  return item;
+};
 
 export const removeFromCartAPI = async (cartId) => {
   if (!getToken()) {
     return removeFromGuestCart(cartId);
   }
-  return apiRequest(`/cart/${cartId}`, {
+  const result = await apiRequest(`/cart/${cartId}`, {
     method: 'DELETE',
   });
+  notifyCartChanged();
+  return result;
 };
 
 export const clearCartAPI = async () => {
   if (!getToken()) {
     return clearGuestCart();
   }
-  return apiRequest('/cart', {
+  const result = await apiRequest('/cart', {
     method: 'DELETE',
   });
+  notifyCartChanged();
+  return result;
 };
 
 // ============== REVIEW APIs ==============
@@ -268,10 +287,14 @@ export const removeFromWishlist = (wishlistId) => apiRequest(`/wishlist/${wishli
 });
 
 // ============== ORDER APIs ==============
-export const createOrder = (orderData) => apiRequest('/orders', {
-  method: 'POST',
-  body: orderData,
-});
+export const createOrder = async (orderData) => {
+  const order = await apiRequest('/orders', {
+    method: 'POST',
+    body: orderData,
+  });
+  notifyCartChanged();
+  return order;
+};
 
 export const getMyOrders = () => apiRequest('/orders/my');
 
@@ -308,6 +331,11 @@ export const createCoupon = (couponData) => apiRequest('/coupons', {
 export const validateCoupon = (code, orderTotal) => apiRequest('/coupons/validate', {
   method: 'POST',
   body: { code, order_total: orderTotal },
+});
+
+export const estimateTax = (country, region, subtotal, discount = 0) => apiRequest('/tax/estimate', {
+  method: 'POST',
+  body: { country, region, subtotal, discount },
 });
 
 export const deleteCoupon = (couponId) => apiRequest(`/coupons/${couponId}`, {

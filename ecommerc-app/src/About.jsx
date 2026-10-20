@@ -1,6 +1,6 @@
 import React from "react";
 import { motion } from "framer-motion";
-import Footer from "./Component/footer";
+import Footer from "./Component/Footer";
 
 const About = () => {
   return (

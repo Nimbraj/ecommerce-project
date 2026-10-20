@@ -57,7 +57,7 @@ export default function MostSelling() {
               src={assetUrl(product.image_url)}
               alt={`Image of ${product.title}`}
               className="h-56 w-full object-cover"
-              onError={(e) => { e.target.src = '/assets/21.jpg'; }}
+              onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = assetUrl('/assets/21.jpg'); }}
             />
 
             <div className="p-4 sm:p-6">

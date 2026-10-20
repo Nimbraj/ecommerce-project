@@ -132,7 +132,7 @@ export default function ProductDetail() {
         {/* Image */}
         <div className="relative">
           <div
-            className={`rounded-2xl overflow-hidden bg-white shadow-lg cursor-${imgZoom ? "zoom-in" : "pointer"}`}
+            className={`rounded-2xl overflow-hidden bg-white shadow-lg cursor-${imgZoom ? "zoom-out" : "zoom-in"}`}
             onClick={() => setImgZoom(!imgZoom)}
           >
             <img
@@ -140,7 +140,7 @@ export default function ProductDetail() {
               alt={product.title}
               className={`w-full object-cover transition-transform duration-500 ${imgZoom ? "scale-150" : "scale-100"}`}
               style={{ height: imgZoom ? "auto" : "400px" }}
-              onError={(e) => { e.target.src = '/assets/8.jpg'; }}
+              onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = assetUrl('/assets/8.jpg'); }}
             />
           </div>
           <p className="text-xs text-gray-400 mt-2 text-center">Click image to {imgZoom ? "zoom out" : "zoom in"}</p>
