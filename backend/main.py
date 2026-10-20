@@ -1,15 +1,8 @@
 import os
-import base64
-import hashlib
-import hmac
-import json
-import secrets
-import uuid
 from dotenv import load_dotenv
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from datetime import datetime, timedelta
 from typing import List, Optional, Union
-from fastapi import FastAPI, Depends, Header, HTTPException, Request, status, Query
+from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
@@ -19,9 +12,6 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, relationship, sessionmaker
 from passlib.context import CryptContext
 from jose import JWTError, jwt
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote
-from urllib.request import Request as UrlRequest, urlopen
 import pyotp
 import re
 
@@ -104,8 +94,6 @@ class Order(Base):
     discount = Column(Float, default=0.0)
     payment_method = Column(String, default="cash_on_delivery")
     payment_status = Column(String, default="unpaid")
-    cashfree_order_id = Column(String, nullable=True)
-    cashfree_payment_session_id = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -203,14 +191,6 @@ if engine.dialect.name == "sqlite":
             connection.execute(text("ALTER TABLE orders ADD COLUMN payment_method VARCHAR DEFAULT 'cash_on_delivery'"))
         if "payment_status" not in order_columns:
             connection.execute(text("ALTER TABLE orders ADD COLUMN payment_status VARCHAR DEFAULT 'unpaid'"))
-        if "cashfree_order_id" not in order_columns:
-            connection.execute(text("ALTER TABLE orders ADD COLUMN cashfree_order_id VARCHAR"))
-        if "cashfree_payment_session_id" not in order_columns:
-            connection.execute(text("ALTER TABLE orders ADD COLUMN cashfree_payment_session_id TEXT"))
-        connection.execute(text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS ix_orders_cashfree_order_id "
-            "ON orders (cashfree_order_id) WHERE cashfree_order_id IS NOT NULL"
-        ))
 
 # ============== SCHEMAS ==============
 class Token(BaseModel):
@@ -346,11 +326,6 @@ class WishlistResponse(BaseModel):
 class OrderCreate(BaseModel):
     shipping_address: str = Field(min_length=1)
     coupon_code: Optional[str] = None
-
-class CashfreeOrderCreate(OrderCreate):
-    customer_name: str = Field(min_length=1, max_length=100)
-    customer_email: EmailStr
-    customer_phone: str = Field(min_length=8, max_length=15)
 
 class OrderListResponse(BaseModel):
     id: int
@@ -907,102 +882,6 @@ def create_order(db: Session, user_id: int, order: OrderCreate):
     db.refresh(db_order)
     return db_order
 
-def cashfree_configuration():
-    app_id = os.getenv("CASHFREE_APP_ID", "").strip()
-    secret = os.getenv("CASHFREE_SECRET_KEY", "").strip()
-    mode = os.getenv("CASHFREE_MODE", "sandbox").strip().lower()
-    if not app_id or not secret:
-        raise HTTPException(status_code=503, detail="Cashfree is not configured. Add CASHFREE_APP_ID and CASHFREE_SECRET_KEY to the backend environment.")
-    if mode not in {"sandbox", "production"}:
-        raise HTTPException(status_code=500, detail="CASHFREE_MODE must be sandbox or production")
-    base_url = "https://sandbox.cashfree.com/pg" if mode == "sandbox" else "https://api.cashfree.com/pg"
-    return {
-        "app_id": app_id,
-        "secret": secret,
-        "mode": mode,
-        "base_url": base_url,
-        "api_version": os.getenv("CASHFREE_API_VERSION", "2026-01-01").strip(),
-    }
-
-def cashfree_api_request(method: str, path: str, payload: Optional[dict] = None):
-    config = cashfree_configuration()
-    body = json.dumps(payload).encode("utf-8") if payload is not None else None
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "x-client-id": config["app_id"],
-        "x-client-secret": config["secret"],
-        "x-api-version": config["api_version"],
-        "x-request-id": str(uuid.uuid4()),
-    }
-    if method == "POST":
-        headers["x-idempotency-key"] = str(uuid.uuid4())
-    request = UrlRequest(f"{config['base_url']}{path}", data=body, headers=headers, method=method)
-    try:
-        with urlopen(request, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except HTTPError as error:
-        try:
-            details = json.loads(error.read().decode("utf-8"))
-            message = details.get("message", "Cashfree request failed")
-        except (ValueError, AttributeError):
-            message = "Cashfree request failed"
-        raise HTTPException(status_code=502, detail=f"Cashfree request failed: {message}") from error
-    except (URLError, TimeoutError) as error:
-        raise HTTPException(status_code=502, detail="Cashfree could not be reached. Please retry shortly.") from error
-
-def clear_ordered_cart_items(db: Session, order: Order):
-    for ordered_item in order.items:
-        cart_item = db.query(Cart).filter(
-            Cart.user_id == order.user_id,
-            Cart.product_id == ordered_item.product_id,
-        ).first()
-        if not cart_item:
-            continue
-        remaining_quantity = cart_item.quantity - ordered_item.quantity
-        if remaining_quantity > 0:
-            cart_item.quantity = remaining_quantity
-        else:
-            db.delete(cart_item)
-    db.commit()
-
-def update_cashfree_order_from_provider(db: Session, order: Order, provider_order: dict):
-    if provider_order.get("order_id") != order.cashfree_order_id:
-        raise HTTPException(status_code=502, detail="Cashfree returned a different order reference")
-
-    provider_status = provider_order.get("order_status")
-    if provider_status == "PAID":
-        try:
-            provider_amount = Decimal(str(provider_order.get("order_amount"))).quantize(Decimal("0.01"))
-            expected_amount = Decimal(str(order.total)).quantize(Decimal("0.01"))
-        except (InvalidOperation, TypeError):
-            raise HTTPException(status_code=502, detail="Cashfree returned an invalid order amount")
-        if provider_order.get("order_currency") != "INR" or provider_amount != expected_amount:
-            raise HTTPException(status_code=409, detail="Cashfree payment details do not match this order")
-        if order.status == "cancelled":
-            raise HTTPException(status_code=409, detail="This order was cancelled; contact support to resolve the payment")
-        if order.payment_status != "paid":
-            order.payment_status = "paid"
-            if order.status == "pending":
-                order.status = "confirmed"
-            order.updated_at = datetime.utcnow()
-            clear_ordered_cart_items(db, order)
-            db.commit()
-            db.refresh(order)
-    elif provider_status in {"EXPIRED", "TERMINATED"} and order.payment_status != "paid":
-        if order.status in {"pending", "confirmed", "processing"}:
-            cancel_order(db, order.id)
-        order.payment_status = "expired"
-        order.updated_at = datetime.utcnow()
-        db.commit()
-        db.refresh(order)
-
-    return {
-        "payment_status": order.payment_status,
-        "payment_session_id": order.cashfree_payment_session_id,
-        "order": {"id": order.id} if order.payment_status == "paid" else None,
-    }
-
 def get_order(db: Session, order_id: int):
     return db.query(Order).filter(Order.id == order_id).first()
 
@@ -1084,12 +963,12 @@ def cancel_order(db: Session, order_id: int):
         return None
     if db_order.status == "cancelled":
         return db_order
-    if db_order.payment_method == "cashfree" and db_order.payment_status == "paid":
-        raise HTTPException(status_code=400, detail="Paid Cashfree orders must be refunded instead of cancelled")
+    if db_order.payment_status == "paid":
+        raise HTTPException(status_code=400, detail="Paid orders must be refunded instead of cancelled")
     if db_order.status not in {"pending", "confirmed", "processing"}:
         raise HTTPException(status_code=400, detail="Only pending, confirmed, or processing orders can be cancelled")
     db_order.status = "cancelled"
-    if db_order.payment_method == "cashfree":
+    if db_order.payment_status == "pending":
         db_order.payment_status = "cancelled"
         if db_order.coupon_code:
             coupon = db.query(Coupon).filter(Coupon.code == db_order.coupon_code).first()
@@ -1648,144 +1527,6 @@ def remove_wishlist_item(
     return {"message": "Removed from wishlist"}
 
 # ============== ORDER ENDPOINTS ==============
-@app.post("/api/payments/cashfree/orders", tags=["Payments"])
-def create_cashfree_payment_order(
-    payload: CashfreeOrderCreate,
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
-):
-    config = cashfree_configuration()
-
-    existing_order = db.query(Order).filter(
-        Order.user_id == current_user.id,
-        Order.payment_method == "cashfree",
-        Order.payment_status == "pending",
-        Order.status == "pending",
-        Order.cashfree_order_id.isnot(None),
-    ).order_by(Order.created_at.desc()).first()
-    if existing_order and existing_order.cashfree_payment_session_id:
-        provider_order = cashfree_api_request(
-            "GET", f"/orders/{quote(existing_order.cashfree_order_id, safe='')}"
-        )
-        result = update_cashfree_order_from_provider(db, existing_order, provider_order)
-        if result["payment_status"] == "paid":
-            return {**result, "mode": config["mode"]}
-        if provider_order.get("order_status") == "ACTIVE":
-            return {
-                "order_id": existing_order.cashfree_order_id,
-                "payment_session_id": existing_order.cashfree_payment_session_id,
-                "payment_status": "pending",
-                "mode": config["mode"],
-            }
-
-    order = create_order(
-        db,
-        current_user.id,
-        OrderCreate(shipping_address=payload.shipping_address, coupon_code=payload.coupon_code),
-    )
-    order.payment_method = "cashfree"
-    order.payment_status = "pending"
-    db.commit()
-    db.refresh(order)
-
-    if Decimal(str(order.total)).quantize(Decimal("0.01")) < Decimal("1.00"):
-        cancel_order(db, order.id)
-        raise HTTPException(status_code=400, detail="Cashfree requires a minimum order amount of INR 1.00")
-
-    cashfree_order_id = f"jn_{order.id}_{secrets.token_hex(6)}"
-    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
-    return_url = f"{frontend_url}/checkout?cashfree_order_id={{order_id}}"
-    order_meta = {"return_url": return_url}
-    webhook_url = os.getenv("CASHFREE_WEBHOOK_URL", "").strip()
-    if webhook_url:
-        order_meta["notify_url"] = webhook_url
-
-    request_payload = {
-        "order_id": cashfree_order_id,
-        "order_amount": float(Decimal(str(order.total)).quantize(Decimal("0.01"))),
-        "order_currency": "INR",
-        "customer_details": {
-            "customer_id": str(current_user.id),
-            "customer_name": payload.customer_name,
-            "customer_email": str(payload.customer_email),
-            "customer_phone": payload.customer_phone,
-        },
-        "order_meta": order_meta,
-        "order_expiry_time": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
-        "order_note": f"Store order {order.id}",
-    }
-    try:
-        provider_order = cashfree_api_request("POST", "/orders", request_payload)
-        payment_session_id = provider_order.get("payment_session_id")
-        returned_order_id = provider_order.get("order_id")
-        if not payment_session_id or returned_order_id != cashfree_order_id:
-            raise HTTPException(status_code=502, detail="Cashfree returned an incomplete payment session")
-    except Exception:
-        cancel_order(db, order.id)
-        raise
-
-    order.cashfree_order_id = cashfree_order_id
-    order.cashfree_payment_session_id = payment_session_id
-    db.commit()
-    return {
-        "order_id": cashfree_order_id,
-        "payment_session_id": payment_session_id,
-        "payment_status": "pending",
-        "mode": config["mode"],
-    }
-
-@app.get("/api/payments/cashfree/orders/{cashfree_order_id}/verify", tags=["Payments"])
-def verify_cashfree_payment_order(
-    cashfree_order_id: str,
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
-):
-    order = db.query(Order).filter(Order.cashfree_order_id == cashfree_order_id).first()
-    if not order or order.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Payment order not found")
-    provider_order = cashfree_api_request(
-        "GET", f"/orders/{quote(cashfree_order_id, safe='')}"
-    )
-    result = update_cashfree_order_from_provider(db, order, provider_order)
-    result["mode"] = cashfree_configuration()["mode"]
-    return result
-
-@app.post("/api/payments/cashfree/webhook", tags=["Payments"], include_in_schema=False)
-async def cashfree_payment_webhook(
-    request: Request,
-    x_webhook_signature: Optional[str] = Header(default=None, alias="x-webhook-signature"),
-    x_webhook_timestamp: Optional[str] = Header(default=None, alias="x-webhook-timestamp"),
-    db: Session = Depends(get_db),
-):
-    secret = os.getenv("CASHFREE_SECRET_KEY", "").strip()
-    if not secret or not x_webhook_signature or not x_webhook_timestamp:
-        raise HTTPException(status_code=401, detail="Invalid Cashfree webhook signature")
-    raw_body = await request.body()
-    signed_payload = x_webhook_timestamp.encode("utf-8") + raw_body
-    expected_signature = base64.b64encode(
-        hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).digest()
-    ).decode("ascii")
-    if not hmac.compare_digest(expected_signature, x_webhook_signature):
-        raise HTTPException(status_code=401, detail="Invalid Cashfree webhook signature")
-    try:
-        webhook_payload = json.loads(raw_body)
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=400, detail="Invalid Cashfree webhook payload")
-
-    if webhook_payload.get("type") != "PAYMENT_SUCCESS_WEBHOOK":
-        return {"received": True}
-    cashfree_order_id = (webhook_payload.get("data", {}).get("order") or {}).get("order_id")
-    if not cashfree_order_id:
-        return {"received": True}
-    order = db.query(Order).filter(Order.cashfree_order_id == cashfree_order_id).first()
-    if not order or order.payment_status == "paid":
-        return {"received": True}
-    provider_order = cashfree_api_request(
-        "GET", f"/orders/{quote(cashfree_order_id, safe='')}"
-    )
-    update_cashfree_order_from_provider(db, order, provider_order)
-    return {"received": True}
-
 @app.post("/api/orders", response_model=OrderResponse, tags=["Orders"])
 def place_order(
     order: OrderCreate,

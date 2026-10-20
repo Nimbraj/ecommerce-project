@@ -65,7 +65,7 @@ export default function AdminDashboard() {
   });
   const [draftOrderForm, setDraftOrderForm] = useState({ 
     items: [{ product_id: "", quantity: "", unit_price: "" }], 
-    guest_email: "", guest_name: "", guest_mobile: "", guest_address: "", payment_method: "card" 
+    guest_email: "", guest_name: "", guest_mobile: "", guest_address: ""
   });
   const [inventoryEdits, setInventoryEdits] = useState({});
 
@@ -427,7 +427,7 @@ export default function AdminDashboard() {
       setDraftOrderForm({ 
         items: [{ product_id: "", quantity: "", unit_price: "" }], 
         guest_email: "", guest_name: "", guest_mobile: "", 
-        guest_address: "", payment_method: "card" 
+        guest_address: ""
       }); 
       const o = await getAllOrders(); 
       setOrders(o); 
@@ -1417,11 +1417,6 @@ export default function AdminDashboard() {
                   <input type="text" placeholder="Guest Name" value={draftOrderForm.guest_name} onChange={(e) => setDraftOrderForm({...draftOrderForm, guest_name: e.target.value})} className="border rounded-lg px-3 py-2" />
                   <input type="email" placeholder="Guest Email" value={draftOrderForm.guest_email} onChange={(e) => setDraftOrderForm({...draftOrderForm, guest_email: e.target.value})} className="border rounded-lg px-3 py-2" />
                   <input type="text" placeholder="Guest Mobile" value={draftOrderForm.guest_mobile} onChange={(e) => setDraftOrderForm({...draftOrderForm, guest_mobile: e.target.value})} className="border rounded-lg px-3 py-2" />
-                  <select value={draftOrderForm.payment_method} onChange={(e) => setDraftOrderForm({...draftOrderForm, payment_method: e.target.value})} className="border rounded-lg px-3 py-2">
-                    <option value="card">Card</option>
-                    <option value="cod">Cash on Delivery</option>
-                    <option value="paypal">PayPal</option>
-                  </select>
                 </div>
                 <textarea placeholder="Shipping Address" value={draftOrderForm.guest_address} onChange={(e) => setDraftOrderForm({...draftOrderForm, guest_address: e.target.value})} className="border rounded-lg px-3 py-2 w-full" rows="2" />
                 
