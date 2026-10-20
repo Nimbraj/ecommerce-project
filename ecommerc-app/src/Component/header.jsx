@@ -91,7 +91,7 @@ const Header = () => {
         {/* Logo */}
         <Link to="/" className="flex shrink-0 items-center gap-2" aria-label="JN ECOMMERCE home">
           <img
-            src="/jn-ecommerce-mark.png"
+            src={`${import.meta.env.BASE_URL}jn-ecommerce-mark.png`}
             alt=""
             className="h-8 w-[46px] object-contain sm:h-10 sm:w-[74px]"
           />
@@ -249,4 +249,3 @@ const Header = () => {
 };
 
 export default Header;
-

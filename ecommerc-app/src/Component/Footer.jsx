@@ -1,4 +1,5 @@
 import React from "react";
+import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { FaFacebook, FaInstagram, FaTwitter, FaLinkedin } from "react-icons/fa";
 
@@ -36,10 +37,10 @@ const Footer = () => {
         <div>
           <h4 className="font-semibold mb-4 text-teal-400">Quick Links</h4>
           <ul className="space-y-2 text-sm text-gray-300">
-            <li><a href="/" className="hover:text-white">Home</a></li>
-            <li><a href="/product" className="hover:text-white">Products</a></li>
-            <li><a href="/about" className="hover:text-white">About Us</a></li>
-            <li><a href="/contact" className="hover:text-white">Contact</a></li>
+            <li><Link to="/" className="hover:text-white">Home</Link></li>
+            <li><Link to="/product" className="hover:text-white">Products</Link></li>
+            <li><Link to="/about" className="hover:text-white">About Us</Link></li>
+            <li><Link to="/login" className="hover:text-white">My Account</Link></li>
           </ul>
         </div>
 
