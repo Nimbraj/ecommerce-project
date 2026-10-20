@@ -1,0 +1,31 @@
+databases:
+  - name: ecommerce-db
+    databaseName: ecommerce
+    user: ecommerce
+    plan: basic-256mb
+    region: singapore
+
+services:
+  - type: web
+    name: ecommerce-api
+    runtime: python
+    plan: starter
+    region: singapore
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python seed_main.py && uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ecommerce-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: https://nimbraj.github.io
+      - key: INITIAL_ADMIN_EMAIL
+        sync: false
+      - key: INITIAL_ADMIN_PASSWORD
+        sync: false
+      - key: INITIAL_ADMIN_NAME
+        value: Store Administrator
