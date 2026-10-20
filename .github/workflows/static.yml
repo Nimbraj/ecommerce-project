@@ -44,13 +44,7 @@ jobs:
         env:
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
           VITE_API_URL: ${{ vars.VITE_API_URL }}
-        run: |
-          if [ -z "$VITE_API_URL" ]; then
-            echo "::error::Set the repository Actions variable VITE_API_URL to the public API origin before deploying GitHub Pages."
-            exit 1
-          fi
-          npm ci
-          npm run build
+        run: npm ci && npm run build
       - name: Configure single page app fallback
         run: cp ecommerc-app/dist/index.html ecommerc-app/dist/404.html
       - name: Upload artifact

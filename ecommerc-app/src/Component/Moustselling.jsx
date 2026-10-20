@@ -19,8 +19,8 @@ export default function MostSelling() {
       try {
         const data = await getProducts();
         setProducts(data);
-      } catch {
-        setError("Failed to load products");
+      } catch (err) {
+        setError(err.message || "Failed to load products");
       } finally {
         setLoading(false);
       }

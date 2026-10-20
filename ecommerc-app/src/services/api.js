@@ -1,9 +1,20 @@
-const API_ORIGIN = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
-const API_BASE_URL = `${API_ORIGIN}/api`;
+import fallbackProductImage from '../assets/8.jpg';
+
+const API_ORIGIN = (import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')).replace(/\/$/, '');
+const API_BASE_URL = API_ORIGIN ? `${API_ORIGIN}/api` : '';
+const API_NOT_CONFIGURED_MESSAGE = 'The store API is not connected yet. Please try again later.';
 
 export const assetUrl = (path) => {
+  if (path && /^https?:\/\//i.test(path)) return path;
+  if (!API_ORIGIN) return fallbackProductImage;
   if (!path) return `${API_ORIGIN}/assets/8.jpg`;
-  return /^https?:\/\//i.test(path) ? path : `${API_ORIGIN}${path.startsWith('/') ? path : `/${path}`}`;
+  return `${API_ORIGIN}${path.startsWith('/') ? path : `/${path}`}`;
+};
+
+const ensureApiConfigured = () => {
+  if (!API_BASE_URL) {
+    throw new Error(API_NOT_CONFIGURED_MESSAGE);
+  }
 };
 
 const getToken = () => localStorage.getItem('token');
@@ -105,6 +116,7 @@ export const getCartCount = () => {
 };
 
 const apiRequest = async (endpoint, options = {}) => {
+  ensureApiConfigured();
   const url = `${API_BASE_URL}${endpoint}`;
   const config = {
     headers: {
@@ -136,6 +148,7 @@ export const registerUser = (userData) => apiRequest('/register', {
 });
 
 export const loginUser = (credentials) => {
+  ensureApiConfigured();
   const formData = new URLSearchParams();
   formData.append('username', credentials.email);
   formData.append('password', credentials.password);

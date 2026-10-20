@@ -34,8 +34,8 @@ const CardList = () => {
       try {
         const data = searchQuery ? await searchProducts(searchQuery) : await getProducts();
         if (isCurrentRequest) setProducts(data);
-      } catch {
-        if (isCurrentRequest) setError("Failed to load products");
+      } catch (err) {
+        if (isCurrentRequest) setError(err.message || "Failed to load products");
       } finally {
         if (isCurrentRequest) setLoading(false);
       }
