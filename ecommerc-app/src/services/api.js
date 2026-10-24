@@ -1,6 +1,11 @@
 import fallbackProductImage from '../assets/8.jpg';
 
-const API_ORIGIN = (import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')).replace(/\/$/, '');
+const API_ORIGIN = (
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.DEV
+    ? 'http://localhost:8000'
+    : 'https://ecommerce-project-w06e.onrender.com')
+).replace(/\/$/, '');
 const API_BASE_URL = API_ORIGIN ? `${API_ORIGIN}/api` : '';
 const API_NOT_CONFIGURED_MESSAGE = 'The store API is not connected yet. Please try again later.';
 
