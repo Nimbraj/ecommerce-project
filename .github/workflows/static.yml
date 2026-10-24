@@ -43,7 +43,7 @@ jobs:
         working-directory: ecommerc-app
         env:
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
-          VITE_API_URL: ${{ vars.VITE_API_URL }}
+          VITE_API_URL: ${{ vars.VITE_API_URL || 'https://ecommerce-project-w06e.onrender.com' }}
         run: npm ci && npm run build
       - name: Configure single page app fallback
         run: cp ecommerc-app/dist/index.html ecommerc-app/dist/404.html
