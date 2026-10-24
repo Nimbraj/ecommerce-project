@@ -13,7 +13,7 @@ services:
     region: singapore
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: python seed_main.py && uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: python seed_main.py && python -m gunicorn main:app --workers 1 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
     envVars:
       - key: DATABASE_URL
         fromDatabase:
